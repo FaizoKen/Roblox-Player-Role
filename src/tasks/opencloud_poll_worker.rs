@@ -19,8 +19,9 @@ pub async fn run(state: Arc<AppState>) {
             String,
             i32,
             sqlx::types::Json<serde_json::Value>,
+            String,
         )>(
-            "SELECT universe_id, open_cloud_api_key_encrypted, datastore_name, poll_interval_seconds, stat_field_map \
+            "SELECT universe_id, open_cloud_api_key_encrypted, datastore_name, poll_interval_seconds, stat_field_map, entry_key_template \
              FROM game_universes \
              WHERE pull_enabled = TRUE \
                AND open_cloud_api_key_encrypted IS NOT NULL \
@@ -32,7 +33,7 @@ pub async fn run(state: Arc<AppState>) {
         .fetch_optional(&state.pool)
         .await;
 
-        let (universe_id, key_encrypted, datastore_name, _interval, stat_map) = match due {
+        let (universe_id, key_encrypted, datastore_name, _interval, stat_map, entry_key_template) = match due {
             Ok(Some(r)) => r,
             Ok(None) => {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -75,8 +76,9 @@ pub async fn run(state: Arc<AppState>) {
 
         let mut updated = 0usize;
         for rid in &linked {
+            let entry_key = entry_key_template.replace("{user_id}", rid);
             match client
-                .read_datastore_entry(&universe_id, &datastore_name, rid, &api_key)
+                .read_datastore_entry(&universe_id, &datastore_name, &entry_key, &api_key)
                 .await
             {
                 Ok(Some(raw)) => {
@@ -113,53 +115,25 @@ async fn upsert_mapped(
     universe_id: &str,
     mapped: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), crate::error::AppError> {
-    let playtime = mapped.get("playtime_minutes").and_then(|v| v.as_i64());
-    let level = mapped.get("level").and_then(|v| v.as_i64());
-    let wins = mapped.get("wins").and_then(|v| v.as_i64());
-    let losses = mapped.get("losses").and_then(|v| v.as_i64());
-    let currency = mapped.get("currency").and_then(|v| v.as_i64());
-    let achievements = mapped.get("achievements").cloned();
-
-    // Anything not in the fixed columns goes into `custom`
-    let mut custom = serde_json::Map::new();
-    for (k, v) in mapped {
-        if !matches!(
-            k.as_str(),
-            "playtime_minutes" | "level" | "wins" | "losses" | "currency" | "achievements"
-        ) {
-            custom.insert(k.clone(), v.clone());
-        }
+    // Every mapped key goes into `custom` — role conditions reference custom
+    // keys directly. Fixed columns (playtime_minutes/level/wins/losses/currency/
+    // achievements) are no longer populated by the poll worker; their schema
+    // remains for backward compatibility with already-stored push rows.
+    if mapped.is_empty() {
+        return Ok(());
     }
+    let custom_blob = sqlx::types::Json(serde_json::Value::Object(mapped.clone()));
 
     sqlx::query(
-        "INSERT INTO player_game_stats (roblox_user_id, universe_id, \
-            playtime_minutes, level, wins, losses, currency, achievements, custom, fetched_at) \
-         VALUES ($1, $2, COALESCE($3::int, 0), COALESCE($4::int, 0), COALESCE($5::int, 0), \
-            COALESCE($6::int, 0), COALESCE($7::bigint, 0), \
-            COALESCE($8::jsonb, '[]'::jsonb), COALESCE($9::jsonb, '{}'::jsonb), now()) \
+        "INSERT INTO player_game_stats (roblox_user_id, universe_id, custom, fetched_at) \
+         VALUES ($1, $2, $3, now()) \
          ON CONFLICT (roblox_user_id, universe_id) DO UPDATE SET \
-            playtime_minutes = COALESCE($3::int, player_game_stats.playtime_minutes), \
-            level            = COALESCE($4::int, player_game_stats.level), \
-            wins             = COALESCE($5::int, player_game_stats.wins), \
-            losses           = COALESCE($6::int, player_game_stats.losses), \
-            currency         = COALESCE($7::bigint, player_game_stats.currency), \
-            achievements     = COALESCE($8::jsonb, player_game_stats.achievements), \
-            custom           = player_game_stats.custom || COALESCE($9::jsonb, '{}'::jsonb), \
-            fetched_at       = now()",
+            custom     = player_game_stats.custom || $3, \
+            fetched_at = now()",
     )
     .bind(roblox_user_id)
     .bind(universe_id)
-    .bind(playtime.map(|v| v as i32))
-    .bind(level.map(|v| v as i32))
-    .bind(wins.map(|v| v as i32))
-    .bind(losses.map(|v| v as i32))
-    .bind(currency)
-    .bind(achievements.map(sqlx::types::Json))
-    .bind(if custom.is_empty() {
-        None
-    } else {
-        Some(sqlx::types::Json(serde_json::Value::Object(custom)))
-    })
+    .bind(custom_blob)
     .execute(&state.pool)
     .await?;
 

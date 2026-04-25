@@ -142,6 +142,14 @@ async fn main() {
                     post(routes::games::save_open_cloud),
                 )
                 .route(
+                    "/games/{guild_id}/{universe_id}/datastores",
+                    get(routes::games::list_datastores),
+                )
+                .route(
+                    "/games/{guild_id}/{universe_id}/sample-entry",
+                    get(routes::games::sample_datastore_entry),
+                )
+                .route(
                     "/games/{guild_id}/{universe_id}/delete",
                     post(routes::games::delete_universe),
                 )

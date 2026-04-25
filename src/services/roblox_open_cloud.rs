@@ -74,6 +74,150 @@ impl OpenCloudClient {
             .map_err(|e| AppError::OpenCloud(format!("get_universe parse: {e}")))
     }
 
+    /// Strict ownership probe.
+    ///
+    ///   `GET /universes/{u}/data-stores?maxPageSize=1` — needs
+    ///   `universe-datastores.control:list` on the key, scoped to this exact
+    ///   universe. Only HTTP 200 counts as success.
+    ///
+    /// 404 is rejected because Roblox returns 404 for both "universe doesn't
+    /// exist" and "scope doesn't include this universe" — accepting it would
+    /// let any valid key register any universe ID (squatting / corruption of
+    /// another game's stats).
+    ///
+    /// We don't probe `/places` because Roblox no longer exposes
+    /// `universe.place:read` as a checkable scope in the dashboard. We don't
+    /// probe a single DataStore entry (`objects:read`) because that endpoint
+    /// returns 404 for missing entries, indistinguishable from "wrong universe".
+    pub async fn verify_universe_ownership(
+        &self,
+        universe_id: &str,
+        api_key: &str,
+    ) -> Result<(), AppError> {
+        self.wait().await;
+        let url = format!(
+            "https://apis.roblox.com/cloud/v2/universes/{universe_id}/data-stores?maxPageSize=1"
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .header("x-api-key", api_key)
+            .send()
+            .await
+            .map_err(|e| AppError::OpenCloud(format!("verify_universe request: {e}")))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(AppError::OpenCloud(format!(
+            "verify_universe failed: {status}: {body}"
+        )))
+    }
+
+    /// List the DataStores in a universe. Used to populate the pull-mode
+    /// configuration dropdown. Requires `universe-datastores.objects:list`
+    /// scope on the API key.
+    pub async fn list_datastores(
+        &self,
+        universe_id: &str,
+        api_key: &str,
+    ) -> Result<Vec<String>, AppError> {
+        self.wait().await;
+        let url = format!(
+            "https://apis.roblox.com/cloud/v2/universes/{universe_id}/data-stores?maxPageSize=100"
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .header("x-api-key", api_key)
+            .send()
+            .await
+            .map_err(|e| AppError::OpenCloud(format!("list_datastores request: {e}")))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::OpenCloud(format!(
+                "list_datastores returned {status}: {body}"
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::OpenCloud(format!("list_datastores parse: {e}")))?;
+        let names = body
+            .get("dataStores")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|d| {
+                        d.get("id")
+                            .and_then(|v| v.as_str().map(String::from))
+                            .or_else(|| {
+                                // Fall back to parsing the "path" suffix
+                                d.get("path").and_then(|v| v.as_str()).and_then(|p| {
+                                    p.rsplit('/').next().map(String::from)
+                                })
+                            })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(names)
+    }
+
+    /// List entry IDs for a DataStore. Used to grab a sample entry for
+    /// field-map preview. Requires `universe-datastores.objects:list` scope.
+    pub async fn list_entry_ids(
+        &self,
+        universe_id: &str,
+        datastore_name: &str,
+        api_key: &str,
+        max: u32,
+    ) -> Result<Vec<String>, AppError> {
+        self.wait().await;
+        let url = format!(
+            "https://apis.roblox.com/cloud/v2/universes/{universe_id}/data-stores/{}/scopes/global/entries?maxPageSize={max}",
+            urlencoding::encode(datastore_name),
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .header("x-api-key", api_key)
+            .send()
+            .await
+            .map_err(|e| AppError::OpenCloud(format!("list_entries request: {e}")))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::OpenCloud(format!(
+                "list_entries returned {status}: {body}"
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::OpenCloud(format!("list_entries parse: {e}")))?;
+        let ids = body
+            .get("dataStoreEntries")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|d| {
+                        d.get("id")
+                            .and_then(|v| v.as_str().map(String::from))
+                            .or_else(|| {
+                                d.get("path").and_then(|v| v.as_str()).and_then(|p| {
+                                    p.rsplit('/').next().map(String::from)
+                                })
+                            })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(ids)
+    }
+
     /// Read a single Standard DataStore entry. Returns the raw JSON value, or None if 404.
     /// Uses Open Cloud DataStore v2:
     ///   GET /cloud/v2/universes/{u}/data-stores/{ds}/scopes/global/entries/{entryId}

@@ -77,26 +77,30 @@ pub async fn ingest_stats(
         )));
     }
 
-    // Look up universe + verify secret (constant-time)
-    let row = sqlx::query_as::<_, (String, bool)>(
-        "SELECT ingest_secret, push_enabled FROM game_universes WHERE universe_id = $1",
+    // Multiple guilds can register the same universe in push mode; each gets
+    // its own ingest_secret. Accept the request if ANY push-mode registration
+    // for this universe has a matching secret. Pull-mode registrations are
+    // skipped (push_enabled = false there).
+    let rows = sqlx::query_as::<_, (String,)>(
+        "SELECT ingest_secret FROM game_universes \
+         WHERE universe_id = $1 AND mode = 'push' AND push_enabled = TRUE",
     )
     .bind(&universe_id)
-    .fetch_optional(&state.pool)
+    .fetch_all(&state.pool)
     .await?;
-
-    let Some((expected_secret, push_enabled)) = row else {
-        return Err(AppError::NotFound(format!("Universe {universe_id} not registered")));
-    };
-    if !push_enabled {
-        return Err(AppError::Forbidden("Push ingestion disabled for this universe".into()));
+    if rows.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "Universe {universe_id} is not registered in push mode"
+        )));
     }
-
     let provided = headers
         .get("X-Ingest-Secret")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if !constant_time_eq(provided.as_bytes(), expected_secret.as_bytes()) {
+    let any_match = rows
+        .iter()
+        .any(|(s,)| constant_time_eq(provided.as_bytes(), s.as_bytes()));
+    if !any_match {
         return Err(AppError::Unauthorized);
     }
 
@@ -117,38 +121,46 @@ pub async fn ingest_stats(
             continue;
         }
 
-        // Build COALESCE-style upsert that only overwrites supplied fields, and
-        // shallowly merges custom into the existing JSONB.
+        // All stats — including the typed playtime/level/wins/losses/currency/
+        // achievements fields the Studio plugin sends — are merged into the
+        // `custom` JSONB blob under their field names. Role conditions reference
+        // custom keys directly. Fixed columns are no longer populated by ingest.
+        let mut blob = p.stats.custom.clone();
+        if let Some(v) = p.stats.playtime_minutes {
+            blob.insert("playtime_minutes".into(), serde_json::Value::from(v));
+        }
+        if let Some(v) = p.stats.level {
+            blob.insert("level".into(), serde_json::Value::from(v));
+        }
+        if let Some(v) = p.stats.wins {
+            blob.insert("wins".into(), serde_json::Value::from(v));
+        }
+        if let Some(v) = p.stats.losses {
+            blob.insert("losses".into(), serde_json::Value::from(v));
+        }
+        if let Some(v) = p.stats.currency {
+            blob.insert("currency".into(), serde_json::Value::from(v));
+        }
+        if let Some(a) = &p.stats.achievements {
+            blob.insert("achievements".into(), serde_json::Value::Array(
+                a.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+            ));
+        }
+        if blob.is_empty() {
+            continue;
+        }
+        let blob_json = sqlx::types::Json(serde_json::Value::Object(blob));
+
         sqlx::query(
-            "INSERT INTO player_game_stats (roblox_user_id, universe_id, \
-                playtime_minutes, level, wins, losses, currency, achievements, custom, fetched_at) \
-             VALUES ($1, $2, \
-                COALESCE($3::int, 0), COALESCE($4::int, 0), COALESCE($5::int, 0), \
-                COALESCE($6::int, 0), COALESCE($7::bigint, 0), \
-                COALESCE($8::jsonb, '[]'::jsonb), COALESCE($9::jsonb, '{}'::jsonb), now()) \
+            "INSERT INTO player_game_stats (roblox_user_id, universe_id, custom, fetched_at) \
+             VALUES ($1, $2, $3, now()) \
              ON CONFLICT (roblox_user_id, universe_id) DO UPDATE SET \
-                playtime_minutes = COALESCE($3::int, player_game_stats.playtime_minutes), \
-                level            = COALESCE($4::int, player_game_stats.level), \
-                wins             = COALESCE($5::int, player_game_stats.wins), \
-                losses           = COALESCE($6::int, player_game_stats.losses), \
-                currency         = COALESCE($7::bigint, player_game_stats.currency), \
-                achievements     = COALESCE($8::jsonb, player_game_stats.achievements), \
-                custom           = player_game_stats.custom || COALESCE($9::jsonb, '{}'::jsonb), \
-                fetched_at       = now()",
+                custom     = player_game_stats.custom || $3, \
+                fetched_at = now()",
         )
         .bind(&p.user_id)
         .bind(&universe_id)
-        .bind(p.stats.playtime_minutes.map(|v| v as i32))
-        .bind(p.stats.level.map(|v| v as i32))
-        .bind(p.stats.wins.map(|v| v as i32))
-        .bind(p.stats.losses.map(|v| v as i32))
-        .bind(p.stats.currency)
-        .bind(p.stats.achievements.as_ref().map(|a| sqlx::types::Json(a.clone())))
-        .bind(if p.stats.custom.is_empty() {
-            None
-        } else {
-            Some(sqlx::types::Json(p.stats.custom.clone()))
-        })
+        .bind(blob_json)
         .execute(&mut *tx)
         .await?;
 

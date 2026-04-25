@@ -12,14 +12,25 @@ const NUMERIC_ACCOUNT_FIELDS: &[&str] = &[
     "badgesCount",
 ];
 
-const NUMERIC_GAME_FIELDS: &[&str] = &[
-    "gamePlaytimeMinutes",
-    "gameLevel",
-    "gameWins",
-    "gameLosses",
-    "gameCurrency",
-    "customNumeric",
-];
+/// Encoded game-stat option value: `<universe_id>::<key>::<type>` where type
+/// is one of `numeric`, `boolean`, `string`. Used for the dynamic stat
+/// dropdown so a single field carries (universe, key, type) without needing
+/// runtime option filtering by another field's value.
+pub fn encode_game_stat(universe_id: &str, key: &str, ty: &str) -> String {
+    format!("{universe_id}::{key}::{ty}")
+}
+
+/// Decode the inverse of `encode_game_stat`. Returns (universe_id, key, type).
+pub fn decode_game_stat(value: &str) -> Option<(String, String, String)> {
+    let mut parts = value.splitn(3, "::");
+    let u = parts.next()?.to_string();
+    let k = parts.next()?.to_string();
+    let t = parts.next()?.to_string();
+    if u.is_empty() || k.is_empty() || t.is_empty() {
+        return None;
+    }
+    Some((u, k, t))
+}
 
 pub fn build_config_schema(
     conditions: &[Condition],
@@ -27,6 +38,8 @@ pub fn build_config_schema(
     players_url: &str,
     games_url: &str,
     view_permission: &str,
+    universes: &[(String, String)],
+    observed_stats: &[(String, String, Option<String>)],
 ) -> Value {
     let c = conditions.first();
     let mut values = HashMap::new();
@@ -51,14 +64,25 @@ pub fn build_config_schema(
             ""
         }),
     );
-    values.insert(
-        "condition_field_game".to_string(),
-        json!(if category == ConditionCategory::Game {
-            c.map(|c| c.field.json_key()).unwrap_or("")
-        } else {
-            ""
-        }),
-    );
+    // For Game category we encode the current selection as
+    // `<universe_id>::<key>::<type>` so the dynamic stat dropdown re-selects it.
+    // Legacy (non-custom) Game fields can't be re-encoded — admin must re-pick.
+    let game_seed = if category == ConditionCategory::Game {
+        c.and_then(|c| {
+            let uid = c.universe_id.as_deref()?;
+            let key = c.stat_key.as_deref();
+            match c.field {
+                ConditionField::CustomNumeric => key.map(|k| encode_game_stat(uid, k, "numeric")),
+                ConditionField::CustomBoolean => key.map(|k| encode_game_stat(uid, k, "boolean")),
+                ConditionField::CustomString => key.map(|k| encode_game_stat(uid, k, "string")),
+                _ => None,
+            }
+        })
+        .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    values.insert("condition_field_game".to_string(), json!(game_seed));
 
     let operator_key = c.map(|c| c.operator.key()).unwrap_or("gte");
     values.insert("operator_account".to_string(), json!(operator_key));
@@ -106,6 +130,61 @@ pub fn build_config_schema(
             }
         }
     }
+
+    // ─── Dynamic Game-stat dropdown ─────────────────────────────────────────
+    //
+    // Each option encodes (universe, custom_key, json_type) so the schema
+    // engine — which can't filter options by another field's value — still
+    // gives the admin a single picker that drives both universe selection and
+    // type-aware value inputs. equals_any sets below let the value fields show
+    // only when a matching-type stat is picked.
+    let mut universe_label: HashMap<String, String> = HashMap::new();
+    for (uid, name) in universes {
+        universe_label.insert(uid.clone(), name.clone());
+    }
+    let mut game_stat_options: Vec<Value> = Vec::new();
+    let mut numeric_game_opts: Vec<String> = Vec::new();
+    let mut boolean_game_opts: Vec<String> = Vec::new();
+    let mut string_game_opts: Vec<String> = Vec::new();
+    for (uid, key, jtype_opt) in observed_stats {
+        let jtype = jtype_opt.as_deref().unwrap_or("string");
+        let bucket = match jtype {
+            "number" => "numeric",
+            "boolean" => "boolean",
+            _ => "string",
+        };
+        let value = encode_game_stat(uid, key, bucket);
+        let label = format!(
+            "{} · {} ({})",
+            universe_label.get(uid).cloned().unwrap_or_else(|| format!("Universe {uid}")),
+            key,
+            bucket,
+        );
+        game_stat_options.push(json!({"label": label, "value": value}));
+        match bucket {
+            "numeric" => numeric_game_opts.push(value),
+            "boolean" => boolean_game_opts.push(value),
+            _ => string_game_opts.push(value),
+        }
+    }
+    // Always seed the placeholder so the dropdown isn't empty on first load.
+    if game_stat_options.is_empty() {
+        let hint = if universes.is_empty() {
+            "(no Roblox games registered yet — visit the Games page)".to_string()
+        } else {
+            "(no in-game stats reported yet — push or pull at least one player's data first)".to_string()
+        };
+        game_stat_options.push(json!({"label": hint, "value": ""}));
+    }
+    let registered_universes_blurb: String = if universes.is_empty() {
+        "Register a Roblox game on the Games page first.".into()
+    } else {
+        let names: Vec<String> = universes
+            .iter()
+            .map(|(uid, name)| format!("• {name} (universe {uid})"))
+            .collect();
+        format!("Registered games for this server:\n{}", names.join("\n"))
+    };
 
     json!({
         "version": 1,
@@ -189,42 +268,20 @@ pub fn build_config_schema(
 
                     // ─── Game branch ────────────────────────────────
                     {
-                        "type": "text",
-                        "key": "universe_id",
-                        "label": "Roblox Universe ID",
-                        "description": "The Universe ID of your Roblox game. The game's owner must register it on the Games tab and integrate the plugin (Open Cloud key, ingest webhook, or Studio plugin).",
-                        "validation": { "pattern": "^[0-9]+$", "pattern_message": "Universe ID must be numeric", "required": true },
+                        "type": "display",
+                        "key": "registered_games_info",
+                        "label": "Game integration",
+                        "value": registered_universes_blurb,
                         "condition": { "field": "condition_category", "equals": "game" }
                     },
                     {
                         "type": "select",
                         "key": "condition_field_game",
                         "label": "What to check",
-                        "description": "Pick the in-game stat to evaluate. The first five are common stats reported by the integration. CustomNumeric/Boolean/String let you check arbitrary stat keys your game reports under the 'custom' object.",
+                        "description": "Pick the registered Roblox game and the in-game stat to evaluate. Stats appear here once your game has reported at least one player's data (push via Studio plugin / webhook, or pull via Open Cloud DataStore).",
                         "validation": { "required": true },
                         "condition": { "field": "condition_category", "equals": "game" },
-                        "options": [
-                            {"label": "Total in-game playtime (minutes)", "value": "gamePlaytimeMinutes"},
-                            {"label": "In-game level", "value": "gameLevel"},
-                            {"label": "Wins", "value": "gameWins"},
-                            {"label": "Losses", "value": "gameLosses"},
-                            {"label": "In-game currency", "value": "gameCurrency"},
-                            {"label": "Has a specific in-game achievement", "value": "hasGameAchievement"},
-                            {"label": "Custom numeric stat (e.g. score)", "value": "customNumeric"},
-                            {"label": "Custom boolean stat (e.g. isVip)", "value": "customBoolean"},
-                            {"label": "Custom string stat (e.g. clan='Red')", "value": "customString"}
-                        ]
-                    },
-                    {
-                        "type": "text",
-                        "key": "stat_key",
-                        "label": "Custom stat key",
-                        "description": "Name of the field inside the 'custom' object reported by your game (e.g. 'score', 'rank', 'clan').",
-                        "validation": { "required": true },
-                        "conditions": [
-                            { "field": "condition_category", "equals": "game" },
-                            { "field": "condition_field_game", "equals_any": ["customNumeric","customBoolean","customString"] }
-                        ]
+                        "options": game_stat_options
                     },
 
                     // ─── Comparison operator (numeric only) ─────────
@@ -271,7 +328,7 @@ pub fn build_config_schema(
                         "default_value": "gte",
                         "conditions": [
                             { "field": "condition_category", "equals": "game" },
-                            { "field": "condition_field_game", "equals_any": NUMERIC_GAME_FIELDS }
+                            { "field": "condition_field_game", "equals_any": numeric_game_opts.clone() }
                         ],
                         "options": [
                             {"label": "= equals", "value": "eq"},
@@ -406,7 +463,7 @@ pub fn build_config_schema(
                         "default_value": "true",
                         "conditions": [
                             { "field": "condition_category", "equals": "game" },
-                            { "field": "condition_field_game", "equals": "customBoolean" }
+                            { "field": "condition_field_game", "equals_any": boolean_game_opts.clone() }
                         ],
                         "options": [
                             {"label": "Yes — must match", "value": "true"},
@@ -421,7 +478,7 @@ pub fn build_config_schema(
                         "validation": { "min": 0, "required": true },
                         "conditions": [
                             { "field": "condition_category", "equals": "game" },
-                            { "field": "condition_field_game", "equals_any": NUMERIC_GAME_FIELDS }
+                            { "field": "condition_field_game", "equals_any": numeric_game_opts.clone() }
                         ]
                     },
                     {
@@ -433,7 +490,7 @@ pub fn build_config_schema(
                         "pair_with": "value_num_game",
                         "conditions": [
                             { "field": "condition_category", "equals": "game" },
-                            { "field": "condition_field_game", "equals_any": NUMERIC_GAME_FIELDS },
+                            { "field": "condition_field_game", "equals_any": numeric_game_opts.clone() },
                             { "field": "operator_game", "equals": "between" }
                         ]
                     },
@@ -441,11 +498,11 @@ pub fn build_config_schema(
                         "type": "text",
                         "key": "value_string_game",
                         "label": "Value",
-                        "description": "The exact value to match — for an in-game achievement, this is the achievement key your game reports (e.g. 'first_blood').",
+                        "description": "The exact value to match (case-sensitive).",
                         "validation": { "required": true },
                         "conditions": [
                             { "field": "condition_category", "equals": "game" },
-                            { "field": "condition_field_game", "equals_any": ["hasGameAchievement","customString"] }
+                            { "field": "condition_field_game", "equals_any": string_game_opts.clone() }
                         ]
                     }
                 ]
@@ -476,9 +533,8 @@ pub fn build_config_schema(
                               50+ friends → Account → Friends count, >= 50\n\
                               Owns gamepass 'VIP' → Account → Owns specific gamepass, ID = your_pass_id\n\
                               Group officer → Group → Has at least rank in group, Group ID = X, >= 100\n\
-                              Veteran (10+ hrs in your game) → Game → Universe ID = Y, Total playtime, >= 600\n\
-                              Level 10+ in your game → Game → Universe ID = Y, In-game level, >= 10\n\
-                              VIP flag (custom) → Game → Universe ID = Y, Custom boolean, key='isVip', Yes"
+                              Game stat (e.g. Level >= 10) → Game → pick the game/stat, comparison >=, value 10\n\
+                              VIP flag (custom boolean) → Game → pick the game/isVip stat, value Yes"
                 }]
             }
         ],
@@ -492,10 +548,46 @@ pub fn parse_config(config: &HashMap<String, Value>) -> Result<Vec<Condition>, A
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let field_key = match category {
-        "account" => config.get("condition_field_account").and_then(|v| v.as_str()).unwrap_or(""),
-        "group" => config.get("condition_field_group").and_then(|v| v.as_str()).unwrap_or(""),
-        "game" => config.get("condition_field_game").and_then(|v| v.as_str()).unwrap_or(""),
+    // For Game category, condition_field_game now carries an encoded triplet
+    // `<universe_id>::<key>::<type>`; decode it into the legacy field-key the
+    // rest of this function expects, plus the derived universe_id + stat_key.
+    let mut decoded_universe: Option<String> = None;
+    let mut decoded_stat_key: Option<String> = None;
+
+    let field_key: String = match category {
+        "account" => config
+            .get("condition_field_account")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "group" => config
+            .get("condition_field_group")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "game" => {
+            let raw = config
+                .get("condition_field_game")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let (uid, key, ty) = decode_game_stat(raw).ok_or_else(|| {
+                AppError::BadRequest(
+                    "Pick a registered game/stat. If the dropdown is empty, register a game on the Games page and let it report at least one player's data first.".into(),
+                )
+            })?;
+            decoded_universe = Some(uid);
+            decoded_stat_key = Some(key);
+            match ty.as_str() {
+                "numeric" => "customNumeric".to_string(),
+                "boolean" => "customBoolean".to_string(),
+                "string" => "customString".to_string(),
+                other => {
+                    return Err(AppError::BadRequest(format!(
+                        "Unknown stat type '{other}'."
+                    )))
+                }
+            }
+        }
         _ => return Err(AppError::BadRequest("Pick a category (Account / Group / Game)".into())),
     };
 
@@ -503,7 +595,7 @@ pub fn parse_config(config: &HashMap<String, Value>) -> Result<Vec<Condition>, A
         return Err(AppError::BadRequest("Pick what to check".into()));
     }
 
-    let field = ConditionField::from_key(field_key)
+    let field = ConditionField::from_key(&field_key)
         .ok_or_else(|| AppError::BadRequest(format!("Invalid condition field '{field_key}'")))?;
 
     // Cross-check category against field
@@ -577,11 +669,13 @@ pub fn parse_config(config: &HashMap<String, Value>) -> Result<Vec<Condition>, A
     };
 
     let group_id = trimmed_string(config, "group_id");
-    let universe_id = trimmed_string(config, "universe_id");
+    // For Game category these come from the encoded condition_field_game
+    // selection; for other categories they may still arrive via legacy keys.
+    let universe_id = decoded_universe.or_else(|| trimmed_string(config, "universe_id"));
+    let stat_key = decoded_stat_key.or_else(|| trimmed_string(config, "stat_key"));
     let badge_id = trimmed_string(config, "badge_id");
     let gamepass_id = trimmed_string(config, "gamepass_id");
     let asset_id = trimmed_string(config, "asset_id");
-    let stat_key = trimmed_string(config, "stat_key");
 
     if field.requires_group() && group_id.is_none() {
         return Err(AppError::BadRequest("Roblox Group ID is required".into()));

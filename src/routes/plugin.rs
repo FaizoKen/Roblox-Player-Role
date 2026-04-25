@@ -75,11 +75,45 @@ pub async fn get_config(
     .await?
     .unwrap_or_else(|| "members".to_string());
 
+    // Registered universes for this guild — surfaced as the universe dropdown.
+    let universes: Vec<(String, String)> = sqlx::query_as(
+        "SELECT universe_id, display_name FROM game_universes \
+         WHERE guild_id = $1 ORDER BY display_name ASC",
+    )
+    .bind(&link.0)
+    .fetch_all(&state.pool)
+    .await?;
+
+    // Observed (universe, custom_key, jsonb_type) tuples — surfaced as the
+    // stat-key dropdown. We pick the most-recent observation per (universe,
+    // key) to infer type. Universes with zero player rows yet won't appear
+    // here — the schema falls back to a placeholder option.
+    let stats: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT DISTINCT ON (g.universe_id, kv.key) \
+            g.universe_id, kv.key, jsonb_typeof(kv.value) \
+         FROM game_universes g \
+         JOIN player_game_stats p ON p.universe_id = g.universe_id \
+         JOIN LATERAL jsonb_each(p.custom) AS kv(key, value) ON TRUE \
+         WHERE g.guild_id = $1 \
+         ORDER BY g.universe_id, kv.key, p.fetched_at DESC",
+    )
+    .bind(&link.0)
+    .fetch_all(&state.pool)
+    .await?;
+
     let verify_url = format!("{}/verify", state.config.base_url);
     let players_url = format!("{}/players/{}", state.config.base_url, link.0);
-    let games_url = format!("{}/games", state.config.base_url);
+    let games_url = format!("{}/games/{}", state.config.base_url, link.0);
 
-    let s = schema::build_config_schema(&link.1, &verify_url, &players_url, &games_url, &view_permission);
+    let s = schema::build_config_schema(
+        &link.1,
+        &verify_url,
+        &players_url,
+        &games_url,
+        &view_permission,
+        &universes,
+        &stats,
+    );
     Ok(Json(s))
 }
 
