@@ -172,7 +172,7 @@ pub fn build_config_schema(
         let hint = if universes.is_empty() {
             "(no Roblox games registered yet — visit the Games page)".to_string()
         } else {
-            "(no in-game stats reported yet — push or pull at least one player's data first)".to_string()
+            "(no in-game stats reported yet — push or pull at least one verified player's data first)".to_string()
         };
         game_stat_options.push(json!({"label": hint, "value": ""}));
     }

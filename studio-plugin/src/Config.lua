@@ -53,9 +53,6 @@ Config.StatPaths = {
     --     end
     --     return earned
     -- end },
-    -- Custom stats land in the "custom" object on the server side.
-    -- Your role conditions then reference them by `stat_key`.
-    -- { key = "custom.score",  lookup = "attribute:Score" },
 }
 
 return Config
