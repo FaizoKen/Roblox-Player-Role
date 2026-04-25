@@ -160,8 +160,8 @@ pub fn render_players_page(base_url: &str) -> String {
         if (players.length === 0) {{ emptyEl.classList.remove('hidden'); }} else {{ emptyEl.classList.add('hidden'); }}
         players.forEach(p => {{
             const tr = document.createElement('tr');
-            const discordLabel = p.discord_username || p.discord_id;
-            const discordTitle = p.discord_username ? ('Discord ID: ' + p.discord_id) : 'Discord username unknown — re-link to capture';
+            const discordLabel = p.discord_username || '—';
+            const discordTitle = 'Discord ID: ' + p.discord_id;
             tr.innerHTML = '<td>' + esc(p.roblox_username || '-') + '</td>' +
                 '<td class="col-id"><a href="https://www.roblox.com/users/' + esc(p.roblox_user_id) + '/profile" target="_blank" rel="noopener">' + esc(p.roblox_user_id) + '</a></td>' +
                 '<td title="' + esc(discordTitle) + '">' + esc(discordLabel) + '</td>' +
@@ -318,7 +318,7 @@ async fn fetch_guild_members(
     state: &Arc<AppState>,
     guild_id: &str,
     cookie: &str,
-) -> Result<(Vec<String>, Option<String>), AppError> {
+) -> Result<(Vec<String>, Option<String>, std::collections::HashMap<String, String>), AppError> {
     let path = format!("/auth/guild_members?guild_id={}", urlencoding::encode(guild_id));
     let body = auth_gateway_get(state, &path, cookie).await?;
     let discord_ids: Vec<String> = body
@@ -326,8 +326,17 @@ async fn fetch_guild_members(
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
+    let usernames: std::collections::HashMap<String, String> = body
+        .get("usernames")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
     let guild_name = body.get("guild_name").and_then(|v| v.as_str()).map(String::from);
-    Ok((discord_ids, guild_name))
+    Ok((discord_ids, guild_name, usernames))
 }
 
 pub async fn players_data(
@@ -360,7 +369,8 @@ pub async fn players_data(
     let members_allowed = view_permission == "members";
 
     let (_, is_manager) = fetch_guild_permission(&state, &guild_id, cookie_value).await?;
-    let (member_ids, ag_guild_name) = fetch_guild_members(&state, &guild_id, cookie_value).await?;
+    let (member_ids, ag_guild_name, ag_usernames) =
+        fetch_guild_members(&state, &guild_id, cookie_value).await?;
 
     if member_ids.is_empty() {
         return Err(AppError::Forbidden(
@@ -410,11 +420,17 @@ pub async fn players_data(
         .iter()
         .map(|r| {
             let fetched_at: chrono::DateTime<chrono::Utc> = r.get("fetched_at");
+            let discord_id: String = r.get("discord_id");
+            // Prefer the locally-cached discord_username (captured at /verify);
+            // fall back to the Auth Gateway's per-guild map for legacy rows.
+            let discord_username = r
+                .get::<Option<String>, _>("discord_username")
+                .or_else(|| ag_usernames.get(&discord_id).cloned());
             json!({
                 "roblox_user_id": r.get::<String, _>("roblox_user_id"),
                 "roblox_username": r.get::<Option<String>, _>("roblox_username"),
-                "discord_id": r.get::<String, _>("discord_id"),
-                "discord_username": r.get::<Option<String>, _>("discord_username"),
+                "discord_id": discord_id,
+                "discord_username": discord_username,
                 "friends_count": r.get::<i32, _>("friends_count"),
                 "followers_count": r.get::<i32, _>("followers_count"),
                 "badges_count": r.get::<i32, _>("badges_count"),
