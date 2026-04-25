@@ -97,6 +97,26 @@ pub async fn sync_for_player(discord_id: &str, state: &AppState) -> Result<(), A
         })
         .collect();
 
+    // Defense-in-depth against stale role_links: only honor (guild_id, universe_id)
+    // pairs that are still registered in game_universes. post_config validates at
+    // save time, but a universe can be deleted afterward.
+    let needed_guild_ids: HashSet<String> =
+        role_links.iter().map(|(g, _, _, _)| g.clone()).collect();
+    let authorized_pairs: HashSet<(String, String)> = if needed_universes.is_empty() {
+        HashSet::new()
+    } else {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT guild_id, universe_id FROM game_universes \
+             WHERE guild_id = ANY($1) AND universe_id = ANY($2)",
+        )
+        .bind(needed_guild_ids.iter().cloned().collect::<Vec<_>>())
+        .bind(needed_universes.iter().cloned().collect::<Vec<_>>())
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect()
+    };
+
     let mut game_stats: HashMap<String, PlayerGameStatsRow> = HashMap::new();
     for universe_id in &needed_universes {
         if let Ok(Some(g)) = sqlx::query_as::<_, (i32, i32, i32, i32, i64, serde_json::Value, serde_json::Value)>(
@@ -139,7 +159,14 @@ pub async fn sync_for_player(discord_id: &str, state: &AppState) -> Result<(), A
 
     let mut actions: Vec<Action> = Vec::new();
     for (guild_id, role_id, api_token, conditions) in &role_links {
-        let qualifies = evaluate_conditions(conditions, &user_cache, &game_stats);
+        // If any condition references a universe not registered for this guild,
+        // the role does not qualify (treated as condition failure).
+        let unauthorized = conditions.iter().any(|c| {
+            c.universe_id
+                .as_ref()
+                .is_some_and(|u| !authorized_pairs.contains(&(guild_id.clone(), u.clone())))
+        });
+        let qualifies = !unauthorized && evaluate_conditions(conditions, &user_cache, &game_stats);
         let assigned = existing.contains(&(guild_id.clone(), role_id.clone()));
         match (qualifies, assigned) {
             (true, false) => actions.push(Action::Add {
@@ -437,6 +464,40 @@ pub async fn sync_for_role_link(
             .await?;
         tracing::info!(guild_id, role_id, "Cleared role (no conditions configured)");
         return Ok(());
+    }
+
+    // Defense-in-depth: if any condition references a universe not currently
+    // registered for this guild (e.g. owner deleted it after config was saved),
+    // treat the role as ungrantable and clear it. post_config blocks this at
+    // save time, but registrations can change afterward.
+    let referenced_universes: Vec<String> = conditions
+        .iter()
+        .filter_map(|c| c.universe_id.clone())
+        .collect();
+    if !referenced_universes.is_empty() {
+        let registered: Vec<(String,)> = sqlx::query_as(
+            "SELECT universe_id FROM game_universes \
+             WHERE guild_id = $1 AND universe_id = ANY($2)",
+        )
+        .bind(guild_id)
+        .bind(&referenced_universes)
+        .fetch_all(pool)
+        .await?;
+        let registered_set: HashSet<String> = registered.into_iter().map(|(u,)| u).collect();
+        if referenced_universes.iter().any(|u| !registered_set.contains(u)) {
+            tracing::warn!(
+                guild_id,
+                role_id,
+                "Role references unregistered universe(s); clearing assignments"
+            );
+            rl_client.replace_users_scalable(guild_id, role_id, &[], &api_token).await?;
+            sqlx::query("DELETE FROM role_assignments WHERE guild_id = $1 AND role_id = $2")
+                .bind(guild_id)
+                .bind(role_id)
+                .execute(pool)
+                .await?;
+            return Ok(());
+        }
     }
 
     let (member_ids, _guild_name) = auth_gateway::fetch_guild_member_ids(

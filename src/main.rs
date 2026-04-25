@@ -38,6 +38,7 @@ pub struct AppState {
     pub verify_html: bytes::Bytes,
     pub players_html: bytes::Bytes,
     pub games_html: bytes::Bytes,
+    pub games_landing_html: bytes::Bytes,
 }
 
 #[tokio::main]
@@ -80,6 +81,7 @@ async fn main() {
     let verify_html = bytes::Bytes::from(routes::verification::render_verify_page(&app_config.base_url));
     let players_html = bytes::Bytes::from(routes::players::render_players_page(&app_config.base_url));
     let games_html = bytes::Bytes::from(routes::games::render_games_page(&app_config.base_url));
+    let games_landing_html = bytes::Bytes::from(routes::games::render_landing_page(&app_config.base_url));
 
     let state = Arc::new(AppState {
         pool,
@@ -95,6 +97,7 @@ async fn main() {
         verify_html,
         players_html,
         games_html,
+        games_landing_html,
     });
 
     tokio::spawn(tasks::refresh_worker::run(Arc::clone(&state)));
@@ -123,19 +126,25 @@ async fn main() {
                 // Player list
                 .route("/players/{guild_id}", get(routes::players::players_page))
                 .route("/players/{guild_id}/data", get(routes::players::players_data))
-                // Game-creator admin UI
-                .route("/games", get(routes::games::games_page))
-                .route("/games/data", get(routes::games::games_data))
-                .route("/games", post(routes::games::create_universe))
+                // Game-creator admin UI (guild-scoped: each universe registration
+                // is private to one Discord server)
+                .route("/games", get(routes::games::landing_page))
+                .route("/games/data", get(routes::games::my_guilds_data))
+                .route("/games/{guild_id}", get(routes::games::games_page))
+                .route("/games/{guild_id}/data", get(routes::games::games_data))
+                .route("/games/{guild_id}", post(routes::games::create_universe))
                 .route(
-                    "/games/{universe_id}/regenerate-secret",
+                    "/games/{guild_id}/{universe_id}/regenerate-secret",
                     post(routes::games::regenerate_secret),
                 )
                 .route(
-                    "/games/{universe_id}/open-cloud",
+                    "/games/{guild_id}/{universe_id}/open-cloud",
                     post(routes::games::save_open_cloud),
                 )
-                .route("/games/{universe_id}/delete", post(routes::games::delete_universe))
+                .route(
+                    "/games/{guild_id}/{universe_id}/delete",
+                    post(routes::games::delete_universe),
+                )
                 // Game ingest webhook
                 .route("/ingest/{universe_id}/stats", post(routes::ingest::ingest_stats))
                 // Studio plugin download

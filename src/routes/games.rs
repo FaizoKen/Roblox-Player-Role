@@ -1,12 +1,18 @@
 //! Game-creator admin UI under `/games`. Cookie-authed via Auth Gateway session.
 //!
+//! Each universe registration is scoped to a single Discord guild — only that
+//! guild's role conditions can reference its in-game stats. Owners who want to
+//! grant roles in multiple guilds register the same universe under each guild.
+//!
 //! Endpoints:
-//!   GET  /games                          — HTML dashboard for the signed-in dev's universes
-//!   GET  /games/data                     — JSON list of universes for the signed-in dev
-//!   POST /games                          — register a new universe (returns ingest_secret once)
-//!   POST /games/{universe_id}/regenerate-secret  — rotate ingest_secret
-//!   POST /games/{universe_id}/open-cloud — set/clear Open Cloud key + DataStore mapping
-//!   POST /games/{universe_id}/delete     — delete the universe (cascades player_game_stats)
+//!   GET  /games                                — landing page: pick a guild
+//!   GET  /games/data                           — JSON list of caller's guilds (for picker)
+//!   GET  /games/{guild_id}                     — HTML dashboard for that guild's universes
+//!   GET  /games/{guild_id}/data                — JSON list of universes for the guild
+//!   POST /games/{guild_id}                     — register a new universe under this guild
+//!   POST /games/{guild_id}/{universe_id}/regenerate-secret  — rotate ingest_secret
+//!   POST /games/{guild_id}/{universe_id}/open-cloud         — set/clear Open Cloud key
+//!   POST /games/{guild_id}/{universe_id}/delete             — delete the universe
 
 use std::sync::Arc;
 
@@ -34,6 +40,176 @@ fn random_secret() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+/// Forward the caller's `rl_session` cookie to the Auth Gateway and parse the
+/// JSON response. Returns Unauthorized on 401, propagates other errors.
+async fn auth_gateway_get(
+    state: &Arc<AppState>,
+    path_and_query: &str,
+    session_cookie_value: &str,
+) -> Result<Value, AppError> {
+    let url = format!("{}{path_and_query}", state.config.auth_gateway_url);
+    let outgoing = axum_extra::extract::cookie::Cookie::build((
+        "rl_session",
+        session_cookie_value.to_string(),
+    ))
+    .build();
+    let cookie_header = outgoing.encoded().to_string();
+
+    let resp = state
+        .http
+        .get(&url)
+        .header(axum::http::header::COOKIE, cookie_header)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Auth Gateway unreachable: {e}")))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(AppError::Unauthorized);
+    }
+    if !status.is_success() {
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "Auth Gateway returned {status}: {body_text}"
+        )));
+    }
+    resp.json::<Value>()
+        .await
+        .map_err(|e| AppError::Internal(format!("Auth Gateway parse error: {e}")))
+}
+
+/// Fetch (is_member, is_manager) for the caller in the given guild.
+async fn fetch_guild_permission(
+    state: &Arc<AppState>,
+    guild_id: &str,
+    cookie: &str,
+) -> Result<(bool, bool), AppError> {
+    let path = format!("/auth/guild_permission?guild_id={}", urlencoding::encode(guild_id));
+    let body = auth_gateway_get(state, &path, cookie).await?;
+    Ok((
+        body.get("is_member").and_then(|v| v.as_bool()).unwrap_or(false),
+        body.get("is_manager").and_then(|v| v.as_bool()).unwrap_or(false),
+    ))
+}
+
+/// Require the caller to be a manager of `guild_id`. Returns the caller's
+/// `discord_id` on success.
+async fn require_manager(
+    state: &Arc<AppState>,
+    jar: &CookieJar,
+    guild_id: &str,
+) -> Result<String, AppError> {
+    let (discord_id, _) = get_session(jar, &state.config.session_secret)?;
+    let cookie = jar.get(SESSION_COOKIE).map(|c| c.value().to_string()).unwrap_or_default();
+    let (is_member, is_manager) = fetch_guild_permission(state, guild_id, &cookie).await?;
+    if !is_member {
+        return Err(AppError::Forbidden(
+            "You must be a member of this Discord server.".into(),
+        ));
+    }
+    if !is_manager {
+        return Err(AppError::Forbidden(
+            "You must have Manage Server permission to register games for this Discord server."
+                .into(),
+        ));
+    }
+    Ok(discord_id)
+}
+
+pub fn render_landing_page(base_url: &str) -> String {
+    format!(
+        r##"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Roblox Player Roles - Pick a Server</title>
+    <link rel="icon" href="{base_url}/favicon.ico" type="image/x-icon">
+    <meta name="theme-color" content="#232527">
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 0 auto; padding: 32px 20px; background: #232527; color: #ebedf0; min-height: 100vh; }}
+        h1 {{ color: #00a2ff; font-size: 24px; }}
+        p {{ color: #b8bcc1; font-size: 14px; line-height: 1.6; margin: 8px 0; }}
+        a {{ color: #00a2ff; }}
+        .card {{ background: #2e3133; padding: 22px; border-radius: 10px; margin: 12px 0; border: 1px solid #3d4144; }}
+        .guild {{ display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 6px; border: 1px solid #3d4144; background: #232527; margin: 6px 0; }}
+        .guild-name {{ color: #ebedf0; font-weight: 500; }}
+        .guild-meta {{ color: #8a9099; font-size: 12px; margin-top: 2px; }}
+        .btn {{ display: inline-block; padding: 8px 18px; background: #00a2ff; color: #fff; text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 500; border: none; cursor: pointer; font-family: inherit; }}
+        .btn:hover {{ background: #0086d3; }}
+        .btn-disabled {{ background: #3d4144; color: #8a9099; cursor: not-allowed; }}
+        .login-btn {{ display: inline-block; padding: 10px 22px; border-radius: 6px; background: #5865f2; color: #fff; text-decoration: none; font-weight: 600; }}
+        .hidden {{ display: none; }}
+        .msg {{ padding: 10px 14px; border-radius: 6px; font-size: 13px; }}
+        .msg-error {{ background: #1c0a0a; color: #fca5a5; border: 1px solid #7f1d1d; }}
+    </style>
+</head>
+<body>
+    <h1>Game Integrations</h1>
+    <p>Pick the Discord server you'd like to register a Roblox game for. Each registration is private to one server — only that server's role conditions can reference its in-game stats.</p>
+
+    <div id="loading" class="card"><p>Loading your servers...</p></div>
+    <div id="error" class="hidden msg msg-error"></div>
+
+    <div id="login-prompt" class="card hidden" style="text-align:center;">
+        <p>You're not signed in.</p>
+        <p style="margin:14px 0;"><a id="login-link" class="login-btn" href="#">Login with Discord</a></p>
+    </div>
+
+    <div id="content" class="hidden">
+        <div class="card">
+            <div id="guilds"></div>
+        </div>
+        <p style="font-size:12px; color:#8a9099;">Only servers where you have <strong>Manage Server</strong> permission can register games.</p>
+    </div>
+
+    <script>
+    const API = '{base_url}';
+    (function () {{
+        const returnTo = window.location.pathname;
+        document.getElementById('login-link').href = '/auth/login?return_to=' + encodeURIComponent(returnTo);
+    }})();
+    function esc(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
+    async function load() {{
+        try {{
+            const res = await fetch(API + '/games/data', {{ credentials: 'include' }});
+            if (res.status === 401) {{
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('login-prompt').classList.remove('hidden');
+                return;
+            }}
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to load servers');
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('content').classList.remove('hidden');
+            const c = document.getElementById('guilds');
+            if (!data.guilds || data.guilds.length === 0) {{
+                c.innerHTML = '<p>You aren\'t in any Discord servers we know about. Make sure you\'ve logged in to RoleLogic at least once.</p>';
+                return;
+            }}
+            c.innerHTML = data.guilds.map(g => {{
+                const label = g.guild_name || ('Server ' + g.guild_id);
+                const meta = g.manage_guild ? 'You have Manage Server permission' : 'No Manage Server permission';
+                const btn = g.manage_guild
+                    ? '<a class="btn" href="' + API + '/games/' + encodeURIComponent(g.guild_id) + '">Manage games</a>'
+                    : '<span class="btn btn-disabled">Not allowed</span>';
+                return '<div class="guild"><div><div class="guild-name">' + esc(label) + '</div><div class="guild-meta">' + esc(meta) + '</div></div>' + btn + '</div>';
+            }}).join('');
+        }} catch (e) {{
+            document.getElementById('loading').classList.add('hidden');
+            const el = document.getElementById('error');
+            el.textContent = e.message;
+            el.classList.remove('hidden');
+        }}
+    }}
+    load();
+    </script>
+</body>
+</html>"##
+    )
 }
 
 pub fn render_games_page(base_url: &str) -> String {
@@ -84,8 +260,9 @@ pub fn render_games_page(base_url: &str) -> String {
 </head>
 <body>
     <h1>Game Integrations</h1>
-    <p>Connect your Roblox game so members of your Discord get roles automatically based on their in-game progress.</p>
-    <p style="margin-top:6px;"><a href="{base_url}/verify">← Player verification page</a></p>
+    <p id="guild-context" style="margin-top:4px;"></p>
+    <p>Connect your Roblox game so members of <strong id="guild-name-inline">this server</strong> get roles automatically based on their in-game progress. Registrations are private to this server — other Discord servers cannot reference this game's data.</p>
+    <p style="margin-top:6px;"><a href="{base_url}/games">← Pick a different server</a> · <a href="{base_url}/verify">Player verification page</a></p>
 
     <div id="msg" class="hidden"></div>
 
@@ -93,6 +270,10 @@ pub fn render_games_page(base_url: &str) -> String {
 
     <div id="login-prompt" class="card hidden">
         <p>You're not signed in. <a id="login-link" href="#">Login with Discord</a> to manage your games.</p>
+    </div>
+
+    <div id="forbidden" class="card hidden">
+        <p>You don't have <strong>Manage Server</strong> permission for this Discord server, so you can't register games for it.</p>
     </div>
 
     <div id="content" class="hidden">
@@ -106,12 +287,16 @@ pub fn render_games_page(base_url: &str) -> String {
             </div>
         </div>
 
-        <h2>Your registered games</h2>
+        <h2>Registered games for this server</h2>
         <div id="universes"></div>
     </div>
 
     <script>
     const API = '{base_url}';
+    const guildId = (function() {{
+        const parts = window.location.pathname.split('/').filter(Boolean);
+        return parts[parts.indexOf('games') + 1] || '';
+    }})();
     (function () {{
         const returnTo = window.location.pathname;
         document.getElementById('login-link').href = '/auth/login?return_to=' + encodeURIComponent(returnTo);
@@ -254,37 +439,13 @@ pub fn render_games_page(base_url: &str) -> String {
                     <ul style="margin:4px 0 4px 20px; color:#b8bcc1;">
                         <li><code>IngestSecret = </code> the secret shown when you registered (or rotate via <em>Show ingest secret &amp; rotate</em> above), in quotes.</li>
                     </ul>
-                    <p style="margin:6px 0; font-size:12px; color:#8a9099;">Save with Ctrl+S. (Advanced alternative: press F5, switch Explorer to <strong>Server</strong> view via the <strong>Test</strong> tab — a <code>RoleLogicConfig</code> Configuration appears under <code>ServerScriptService</code> with editable <code>StringValue</code> children. Values set this way only persist if you re-create the Configuration in Edit mode.)</p>
+                    <p style="margin:6px 0; font-size:12px; color:#8a9099;">Save with Ctrl+S.</p>
 
                     <p style="margin-top:14px;"><strong>Step 4 — Allow HTTP &amp; publish</strong></p>
                     <ol style="margin:6px 0 6px 20px; color:#b8bcc1;">
                         <li><strong>File → Experience Settings</strong> (older Studio: <strong>Game Settings</strong>) → <strong>Security → Allow HTTP Requests = ON</strong> → Save.</li>
-                        <li><strong>File → Publish to Roblox</strong>. Within ~60s of a player joining the live game, stats start arriving here (the <em>push</em> badge above flips on).</li>
+                        <li><strong>File → Publish to Roblox</strong>. Within ~60s of a player joining the live game, stats start arriving here.</li>
                     </ol>
-
-                    <p style="margin-top:14px;"><strong>Step 5 — Map your stats (optional)</strong></p>
-                    <p style="margin:6px 0;">By default the plugin uploads <code>leaderstats</code> values named <code>Level</code>, <code>Wins</code>, <code>Losses</code>, <code>Coins</code>. To upload other values (e.g. attributes, custom names), open the <code>Config</code> ModuleScript inside the Script and edit <code>StatPaths</code>. Custom keys prefixed <code>custom.</code> become <code>stat_key</code> values usable in role conditions.</p>
-
-                    <p style="margin-top:14px;"><strong>Step 6 — Track playtime (optional)</strong></p>
-                    <p style="margin:6px 0;">The shipped Studio plugin does <strong>not</strong> track playtime by default. To enable the <em>Total in-game playtime (minutes)</em> condition, add a tracker script and map it.</p>
-                    <p style="margin:6px 0;"><strong>6a.</strong> If your game already has a <code>Playtime</code> <code>leaderstats</code> entry (in minutes), just append this to <code>StatPaths</code> in the <code>Config</code> ModuleScript:</p>
-                    <pre style="margin:4px 0;">{{ key = "playtime_minutes", lookup = "leaderstats:Playtime" }},</pre>
-                    <p style="margin:6px 0;"><strong>6b.</strong> If you have no playtime tracking, right-click <code>ServerScriptService</code> → <strong>Insert Object</strong> → <code>Script</code> (rename to <code>PlaytimeTracker</code>) and paste:</p>
-                    <pre style="margin:4px 0;">local Players = game:GetService("Players")
-Players.PlayerAdded:Connect(function(p)
-    p:SetAttribute("PlaytimeMinutes", 0)
-    task.spawn(function()
-        while p.Parent do
-            task.wait(60)
-            p:SetAttribute("PlaytimeMinutes", (p:GetAttribute("PlaytimeMinutes") or 0) + 1)
-        end
-    end)
-end)</pre>
-                    <p style="margin:6px 0;">Then append to <code>StatPaths</code> in the <code>Config</code> ModuleScript:</p>
-                    <pre style="margin:4px 0;">{{ key = "playtime_minutes", lookup = "attribute:PlaytimeMinutes" }},</pre>
-                    <p style="margin:6px 0; font-size:12px; color:#8a9099;">Note: this attribute resets on rejoin (no persistence). For permanent cumulative playtime, persist via <code>DataStoreService</code>.</p>
-
-                    <p style="margin-top:10px; font-size:12px; color:#8a9099;">Troubleshooting: see Output in Studio for <code>[RoleLogic]</code> warnings. <code>WebhookUrl or IngestSecret not configured</code> means <code>RoleLogicConfig</code> values are still blank.</p>
                 </div>
             </details>
 
@@ -301,14 +462,19 @@ end)</pre>
     }}
     async function load() {{
         try {{
-            const data = await api('GET', '/games/data');
+            const data = await api('GET', '/games/' + encodeURIComponent(guildId) + '/data');
             document.getElementById('loading').classList.add('hidden');
             document.getElementById('content').classList.remove('hidden');
+            const guildLabel = data.guild_name || ('Server ' + guildId);
+            document.getElementById('guild-context').innerHTML = 'Managing games for <strong>' + esc(guildLabel) + '</strong>';
+            document.getElementById('guild-name-inline').textContent = guildLabel;
+            document.title = guildLabel + ' - Game Integrations';
             const c = document.getElementById('universes');
             c.innerHTML = data.universes.map(renderUniverse).join('') || '<p style="color:#8a9099;">No games yet — register one above.</p>';
         }} catch (e) {{
             document.getElementById('loading').classList.add('hidden');
             if (e.status === 401) {{ document.getElementById('login-prompt').classList.remove('hidden'); return; }}
+            if (e.status === 403) {{ document.getElementById('forbidden').classList.remove('hidden'); return; }}
             showMsg(e.message, 'error');
         }}
     }}
@@ -317,7 +483,7 @@ end)</pre>
         const display_name = document.getElementById('new-display-name').value.trim();
         if (!universe_id || !/^[0-9]+$/.test(universe_id)) return showMsg('Universe ID must be numeric', 'error');
         try {{
-            const r = await api('POST', '/games', {{ universe_id, display_name }});
+            const r = await api('POST', '/games/' + encodeURIComponent(guildId), {{ universe_id, display_name }});
             showMsg('Registered. Ingest secret (copy now — shown only once): ' + r.ingest_secret, 'success');
             await load();
         }} catch (e) {{ showMsg(e.message, 'error'); }}
@@ -325,7 +491,7 @@ end)</pre>
     async function rotateSecret(uid) {{
         if (!confirm('Rotate ingest secret for this universe? Existing scripts will stop working until updated.')) return;
         try {{
-            const r = await api('POST', '/games/' + encodeURIComponent(uid) + '/regenerate-secret');
+            const r = await api('POST', '/games/' + encodeURIComponent(guildId) + '/' + encodeURIComponent(uid) + '/regenerate-secret');
             const wrap = document.getElementById('secret-display-' + uid);
             const val = document.getElementById('secret-value-' + uid);
             val.textContent = r.ingest_secret;
@@ -349,7 +515,7 @@ end)</pre>
         try {{ stat_field_map = JSON.parse(document.getElementById('oc-map-' + uid).value || '{{}}'); }}
         catch (e) {{ return showMsg('Stat field map: invalid JSON', 'error'); }}
         try {{
-            await api('POST', '/games/' + encodeURIComponent(uid) + '/open-cloud',
+            await api('POST', '/games/' + encodeURIComponent(guildId) + '/' + encodeURIComponent(uid) + '/open-cloud',
                 {{ open_cloud_api_key: key, datastore_name, poll_interval_seconds, stat_field_map }});
             showMsg('Open Cloud config saved.', 'success');
             await load();
@@ -358,7 +524,7 @@ end)</pre>
     async function clearOpenCloud(uid) {{
         if (!confirm('Disable Open Cloud pull for this universe?')) return;
         try {{
-            await api('POST', '/games/' + encodeURIComponent(uid) + '/open-cloud',
+            await api('POST', '/games/' + encodeURIComponent(guildId) + '/' + encodeURIComponent(uid) + '/open-cloud',
                 {{ open_cloud_api_key: '', datastore_name: '', stat_field_map: {{}} }});
             showMsg('Pull disabled.', 'success');
             await load();
@@ -367,7 +533,7 @@ end)</pre>
     async function deleteUniverse(uid) {{
         if (!confirm('Delete this game? All cached in-game stats will be removed.')) return;
         try {{
-            await api('POST', '/games/' + encodeURIComponent(uid) + '/delete');
+            await api('POST', '/games/' + encodeURIComponent(guildId) + '/' + encodeURIComponent(uid) + '/delete');
             showMsg('Deleted.', 'success');
             await load();
         }} catch (e) {{ showMsg(e.message, 'error'); }}
@@ -379,6 +545,13 @@ end)</pre>
     )
 }
 
+pub async fn landing_page(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        state.games_landing_html.clone(),
+    )
+}
+
 pub async fn games_page(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     (
         [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -386,11 +559,37 @@ pub async fn games_page(State(state): State<Arc<AppState>>) -> impl IntoResponse
     )
 }
 
-pub async fn games_data(
+/// JSON list of caller's guilds (powers the landing page picker).
+pub async fn my_guilds_data(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
 ) -> Result<Json<Value>, AppError> {
-    let (discord_id, _) = get_session(&jar, &state.config.session_secret)?;
+    let cookie = jar
+        .get(SESSION_COOKIE)
+        .ok_or(AppError::Unauthorized)?
+        .value()
+        .to_string();
+    let body = auth_gateway_get(&state, "/auth/my_guilds", &cookie).await?;
+    Ok(Json(body))
+}
+
+pub async fn games_data(
+    State(state): State<Arc<AppState>>,
+    Path(guild_id): Path<String>,
+    jar: CookieJar,
+) -> Result<Json<Value>, AppError> {
+    let discord_id = require_manager(&state, &jar, &guild_id).await?;
+
+    // Best-effort: pull guild_name from AG to label the page.
+    let cookie = jar.get(SESSION_COOKIE).map(|c| c.value().to_string()).unwrap_or_default();
+    let guild_name = auth_gateway_get(
+        &state,
+        &format!("/auth/guild_members?guild_id={}", urlencoding::encode(&guild_id)),
+        &cookie,
+    )
+    .await
+    .ok()
+    .and_then(|v| v.get("guild_name").and_then(|n| n.as_str()).map(String::from));
 
     let rows = sqlx::query_as::<_, (
         String,
@@ -413,9 +612,10 @@ pub async fn games_data(
              SELECT universe_id, COUNT(*)::bigint AS players_count, MAX(fetched_at) AS last_fetched_at \
              FROM player_game_stats GROUP BY universe_id \
          ) s ON s.universe_id = g.universe_id \
-         WHERE g.owner_discord_id = $1 ORDER BY g.created_at DESC",
+         WHERE g.owner_discord_id = $1 AND g.guild_id = $2 ORDER BY g.created_at DESC",
     )
     .bind(&discord_id)
+    .bind(&guild_id)
     .fetch_all(&state.pool)
     .await?;
 
@@ -438,7 +638,11 @@ pub async fn games_data(
         })
         .collect();
 
-    Ok(Json(json!({ "universes": universes })))
+    Ok(Json(json!({
+        "universes": universes,
+        "guild_id": guild_id,
+        "guild_name": guild_name,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -449,10 +653,11 @@ pub struct CreateBody {
 
 pub async fn create_universe(
     State(state): State<Arc<AppState>>,
+    Path(guild_id): Path<String>,
     jar: CookieJar,
     Json(body): Json<CreateBody>,
 ) -> Result<Json<Value>, AppError> {
-    let (discord_id, _) = get_session(&jar, &state.config.session_secret)?;
+    let discord_id = require_manager(&state, &jar, &guild_id).await?;
 
     if !body.universe_id.chars().all(|c| c.is_ascii_digit()) || body.universe_id.is_empty() {
         return Err(AppError::BadRequest("universe_id must be numeric".into()));
@@ -464,19 +669,21 @@ pub async fn create_universe(
     let secret = random_secret();
 
     let inserted = sqlx::query(
-        "INSERT INTO game_universes (universe_id, display_name, owner_discord_id, ingest_secret) \
-         VALUES ($1, $2, $3, $4) ON CONFLICT (universe_id) DO NOTHING",
+        "INSERT INTO game_universes (universe_id, display_name, owner_discord_id, ingest_secret, guild_id) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (universe_id, guild_id) WHERE guild_id IS NOT NULL DO NOTHING",
     )
     .bind(&body.universe_id)
     .bind(body.display_name.trim())
     .bind(&discord_id)
     .bind(&secret)
+    .bind(&guild_id)
     .execute(&state.pool)
     .await?;
 
     if inserted.rows_affected() == 0 {
         return Err(AppError::Conflict(
-            "Universe already registered (by you or another user)".into(),
+            "This universe is already registered for this Discord server.".into(),
         ));
     }
 
@@ -489,17 +696,19 @@ pub async fn create_universe(
 
 pub async fn regenerate_secret(
     State(state): State<Arc<AppState>>,
-    Path(universe_id): Path<String>,
+    Path((guild_id, universe_id)): Path<(String, String)>,
     jar: CookieJar,
 ) -> Result<Json<Value>, AppError> {
-    let (discord_id, _) = get_session(&jar, &state.config.session_secret)?;
+    let discord_id = require_manager(&state, &jar, &guild_id).await?;
     let secret = random_secret();
     let r = sqlx::query(
-        "UPDATE game_universes SET ingest_secret = $1 WHERE universe_id = $2 AND owner_discord_id = $3",
+        "UPDATE game_universes SET ingest_secret = $1 \
+         WHERE universe_id = $2 AND owner_discord_id = $3 AND guild_id = $4",
     )
     .bind(&secret)
     .bind(&universe_id)
     .bind(&discord_id)
+    .bind(&guild_id)
     .execute(&state.pool)
     .await?;
     if r.rows_affected() == 0 {
@@ -524,21 +733,22 @@ fn default_poll_interval() -> i32 {
 
 pub async fn save_open_cloud(
     State(state): State<Arc<AppState>>,
-    Path(universe_id): Path<String>,
+    Path((guild_id, universe_id)): Path<(String, String)>,
     jar: CookieJar,
     Json(body): Json<OpenCloudBody>,
 ) -> Result<Json<Value>, AppError> {
-    let (discord_id, _) = get_session(&jar, &state.config.session_secret)?;
+    let discord_id = require_manager(&state, &jar, &guild_id).await?;
 
     if body.open_cloud_api_key.trim().is_empty() {
         // Disable pull
         let r = sqlx::query(
             "UPDATE game_universes SET open_cloud_api_key_encrypted = NULL, datastore_name = NULL, \
              stat_field_map = '{}', pull_enabled = FALSE \
-             WHERE universe_id = $1 AND owner_discord_id = $2",
+             WHERE universe_id = $1 AND owner_discord_id = $2 AND guild_id = $3",
         )
         .bind(&universe_id)
         .bind(&discord_id)
+        .bind(&guild_id)
         .execute(&state.pool)
         .await?;
         if r.rows_affected() == 0 {
@@ -552,7 +762,6 @@ pub async fn save_open_cloud(
     }
     let interval = body.poll_interval_seconds.clamp(60, 86400);
 
-    // Verify the key actually owns the universe
     let oc = OpenCloudClient::new(state.config.open_cloud_rate_limit);
     let key_trimmed = body.open_cloud_api_key.trim().to_string();
     if oc.get_universe(&universe_id, &key_trimmed).await.is_err() {
@@ -572,7 +781,7 @@ pub async fn save_open_cloud(
     let r = sqlx::query(
         "UPDATE game_universes SET open_cloud_api_key_encrypted = $1, datastore_name = $2, \
          poll_interval_seconds = $3, stat_field_map = $4, pull_enabled = TRUE \
-         WHERE universe_id = $5 AND owner_discord_id = $6",
+         WHERE universe_id = $5 AND owner_discord_id = $6 AND guild_id = $7",
     )
     .bind(&encrypted)
     .bind(body.datastore_name.trim())
@@ -580,6 +789,7 @@ pub async fn save_open_cloud(
     .bind(sqlx::types::Json(serde_json::Value::Object(map)))
     .bind(&universe_id)
     .bind(&discord_id)
+    .bind(&guild_id)
     .execute(&state.pool)
     .await?;
     if r.rows_affected() == 0 {
@@ -591,17 +801,31 @@ pub async fn save_open_cloud(
 
 pub async fn delete_universe(
     State(state): State<Arc<AppState>>,
-    Path(universe_id): Path<String>,
+    Path((guild_id, universe_id)): Path<(String, String)>,
     jar: CookieJar,
 ) -> Result<Json<Value>, AppError> {
-    let (discord_id, _) = get_session(&jar, &state.config.session_secret)?;
-    let r = sqlx::query("DELETE FROM game_universes WHERE universe_id = $1 AND owner_discord_id = $2")
-        .bind(&universe_id)
-        .bind(&discord_id)
-        .execute(&state.pool)
-        .await?;
+    let discord_id = require_manager(&state, &jar, &guild_id).await?;
+    let mut tx = state.pool.begin().await?;
+    let r = sqlx::query(
+        "DELETE FROM game_universes \
+         WHERE universe_id = $1 AND owner_discord_id = $2 AND guild_id = $3",
+    )
+    .bind(&universe_id)
+    .bind(&discord_id)
+    .bind(&guild_id)
+    .execute(&mut *tx)
+    .await?;
     if r.rows_affected() == 0 {
         return Err(AppError::NotFound("Universe not found".into()));
     }
+    // If no other guild has this universe registered, purge cached stats too.
+    sqlx::query(
+        "DELETE FROM player_game_stats WHERE universe_id = $1 \
+         AND NOT EXISTS (SELECT 1 FROM game_universes WHERE universe_id = $1)",
+    )
+    .bind(&universe_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(Json(json!({"success": true})))
 }

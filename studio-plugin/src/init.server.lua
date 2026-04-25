@@ -18,7 +18,7 @@ local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
 local RunService = game:GetService("RunService")
 
-local Config = require(script.Parent:WaitForChild("Config"))
+local Config = require(script:WaitForChild("Config"))
 
 -- ── Studio-friendly Configuration instance ───────────────────────────────
 local function ensureConfigurationInstance()
@@ -101,7 +101,7 @@ local function send(payload)
     local url = getWebhookUrl()
     local secret = getIngestSecret()
     if url == "" or secret == "" then
-        warn("[RoleLogic] WebhookUrl or IngestSecret not configured — skipping upload")
+        warn("[RoleLogic] WebhookUrl or IngestSecret not configured — see setup guide at https://rolelogic.faizo.net/roblox-player-role/games")
         return false
     end
     local body = HttpService:JSONEncode(payload)
@@ -161,3 +161,4 @@ task.spawn(function()
 end)
 
 print("[RoleLogic] Stat uploader started — interval:", Config.BatchIntervalSeconds, "seconds")
+print("[RoleLogic] Setup guide: https://rolelogic.faizo.net/roblox-player-role/games/<your-universe-id>")

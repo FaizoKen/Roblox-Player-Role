@@ -113,6 +113,31 @@ pub async fn post_config(
 
     let conditions = schema::parse_config(&body.config)?;
 
+    // Each Game-category condition references a universe_id. Universes are
+    // registered per-(guild_id, owner) — reject any universe not registered
+    // for THIS guild so admins can't piggyback on another server's stats.
+    use std::collections::HashSet;
+    let referenced: HashSet<String> = conditions
+        .iter()
+        .filter_map(|c| c.universe_id.clone())
+        .collect();
+    if !referenced.is_empty() {
+        let registered: Vec<(String,)> = sqlx::query_as(
+            "SELECT universe_id FROM game_universes \
+             WHERE guild_id = $1 AND universe_id = ANY($2)",
+        )
+        .bind(&body.guild_id)
+        .bind(referenced.iter().cloned().collect::<Vec<_>>())
+        .fetch_all(&state.pool)
+        .await?;
+        let registered_set: HashSet<String> = registered.into_iter().map(|(u,)| u).collect();
+        if let Some(missing) = referenced.iter().find(|u| !registered_set.contains(*u)) {
+            return Err(AppError::BadRequest(format!(
+                "Universe {missing} is not registered for this server. Visit the Games page and register it first."
+            )));
+        }
+    }
+
     let view_permission = body
         .config
         .get("view_permission")
