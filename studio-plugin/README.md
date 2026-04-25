@@ -12,17 +12,17 @@ rojo build --output dist/Roblox-Player-Role.rbxm
 The resulting file can be:
 
 - Sideloaded into Roblox Studio: **Plugins** tab → **Plugins Folder** → drop the `.rbxm` in → restart Studio.
-- Inserted into an open place via **File → Open** then dragged into `ServerScriptService`.
+- Inserted into an open place by right-clicking `ServerScriptService` in the Explorer → **Insert** → **Import Roblox Model** (older Studio: **Insert from File…**) and picking the `.rbxm`. Alternatively drag the `.rbxm` from your file explorer into the Studio viewport, then drag the resulting Script into `ServerScriptService`. **File → Open** does not accept `.rbxm` — that menu opens place files only.
 - Published to the Creator Store at https://create.roblox.com so devs can install with one click.
 
 ## Configuration
 
-After install, a `Configuration` instance named **RoleLogicConfig** appears under `ServerScriptService`. Set:
+**Recommended (simplest):** in Studio, expand the inserted `Roblox-Player-Role` Script → double-click child `Config` ModuleScript → set `WebhookUrl` and `IngestSecret` at the top → Ctrl+S.
 
-- `WebhookUrl` — the URL shown on `https://<your-host>/roblox-player-role/games/<universe-id>` (under "Webhook URL").
-- `IngestSecret` — the secret shown immediately after registering the universe (rotate via the same page).
+- `WebhookUrl` — URL shown on `https://<your-host>/roblox-player-role/games/<universe-id>` (under "Webhook URL").
+- `IngestSecret` — secret shown immediately after registering the universe (rotate via the same page).
 
-You can also hard-code these at the top of [src/Config.lua](src/Config.lua) and rebuild — the Configuration instance only takes effect when both values are non-empty.
+**Advanced:** press F5, switch Explorer to **Server** view via the **Test** tab — the script auto-creates a `RoleLogicConfig` Configuration under `ServerScriptService` with `WebhookUrl`/`IngestSecret` `StringValue` children. Useful if you'd rather keep secrets out of the script source, but you must re-create the Configuration in Edit mode for values to persist outside Play.
 
 ## Layout
 
@@ -38,3 +38,32 @@ Example:
 { key = "custom.guild_score", lookup = "attribute:GuildScore" },
 ```
 Then in the dashboard: **Game → Custom numeric → stat_key=`guild_score`, >= 5000**.
+
+## Playtime tracking
+
+The shipped plugin does **not** track playtime out of the box. To enable the *Total in-game playtime (minutes)* role condition:
+
+**If your game already has a `Playtime` `leaderstats` entry (in minutes)** — append to `StatPaths`:
+```lua
+{ key = "playtime_minutes", lookup = "leaderstats:Playtime" },
+```
+
+**If you have no playtime tracking** — right-click `ServerScriptService` → **Insert Object** → `Script` (rename to `PlaytimeTracker`) and paste:
+```lua
+local Players = game:GetService("Players")
+Players.PlayerAdded:Connect(function(p)
+    p:SetAttribute("PlaytimeMinutes", 0)
+    task.spawn(function()
+        while p.Parent do
+            task.wait(60)
+            p:SetAttribute("PlaytimeMinutes", (p:GetAttribute("PlaytimeMinutes") or 0) + 1)
+        end
+    end)
+end)
+```
+Then append to `StatPaths`:
+```lua
+{ key = "playtime_minutes", lookup = "attribute:PlaytimeMinutes" },
+```
+
+Note: this attribute resets on rejoin (no persistence). For permanent cumulative playtime, persist via `DataStoreService` (read on `PlayerAdded`, save on `PlayerRemoving` and `BindToClose`).

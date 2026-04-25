@@ -73,6 +73,13 @@ pub fn render_games_page(base_url: &str) -> String {
         .hidden {{ display: none; }}
         .badge-on {{ display: inline-block; padding: 2px 8px; background: #052e16; color: #4ade80; border: 1px solid #14532d; border-radius: 12px; font-size: 11px; }}
         .badge-off {{ display: inline-block; padding: 2px 8px; background: #1c0a0a; color: #fca5a5; border: 1px solid #7f1d1d; border-radius: 12px; font-size: 11px; }}
+        .status-box {{ margin-top: 10px; padding: 10px 14px; border-radius: 6px; border: 1px solid #3d4144; background: #1a1c1e; font-size: 13px; display: flex; align-items: center; gap: 10px; }}
+        .status-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
+        .status-ok {{ background: #4ade80; box-shadow: 0 0 8px #4ade8088; }}
+        .status-stale {{ background: #fbbf24; box-shadow: 0 0 8px #fbbf2488; }}
+        .status-none {{ background: #fca5a5; }}
+        .status-text {{ color: #ebedf0; flex: 1; }}
+        .status-meta {{ color: #8a9099; font-size: 11px; margin-top: 2px; }}
     </style>
 </head>
 <body>
@@ -125,6 +132,38 @@ pub fn render_games_page(base_url: &str) -> String {
         return data;
     }}
     function esc(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
+    function timeAgo(iso) {{
+        if (!iso) return 'never';
+        const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+        if (s < 0)   return 'just now';
+        if (s < 60)  return s + 's ago';
+        if (s < 3600) return Math.floor(s/60) + 'm ago';
+        if (s < 86400) return Math.floor(s/3600) + 'h ago';
+        return Math.floor(s/86400) + 'd ago';
+    }}
+    function renderStatus(u) {{
+        const lastPush = u.last_push_at ? new Date(u.last_push_at).getTime() : 0;
+        const lastPull = u.last_pull_at ? new Date(u.last_pull_at).getTime() : 0;
+        const lastFetched = u.last_stat_fetched_at ? new Date(u.last_stat_fetched_at).getTime() : 0;
+        const lastAny = Math.max(lastPush, lastPull, lastFetched);
+        const ageSec = lastAny > 0 ? Math.floor((Date.now() - lastAny) / 1000) : Infinity;
+        const count = u.players_count || 0;
+        let dot, title, meta;
+        if (lastAny === 0 && count === 0) {{
+            dot = 'status-none';
+            title = '<strong>Setup not confirmed yet</strong> — no stats received from your game.';
+            meta = 'Once a player joins your live (published) game and the Studio plugin posts a batch (default 60s), this turns green.';
+        }} else if (ageSec <= 300) {{
+            dot = 'status-ok';
+            title = '<strong>Setup confirmed — stats flowing</strong>';
+            meta = count + ' player ' + (count === 1 ? 'row' : 'rows') + ' tracked. Last push: ' + timeAgo(u.last_push_at) + '. Last pull: ' + timeAgo(u.last_pull_at) + '.';
+        }} else {{
+            dot = 'status-stale';
+            title = '<strong>No recent activity</strong> — last update ' + timeAgo(new Date(lastAny).toISOString());
+            meta = count + ' player ' + (count === 1 ? 'row' : 'rows') + ' on file. Stats arrive while players are in the live game; this is normal if no one is playing right now.';
+        }}
+        return '<div class="status-box"><div class="status-dot ' + dot + '"></div><div style="flex:1;"><div class="status-text">' + title + '</div><div class="status-meta">' + meta + '</div></div></div>';
+    }}
     function renderUniverse(u) {{
         const ingestUrl = API + '/ingest/' + encodeURIComponent(u.universe_id) + '/stats';
         const rbxmUrl = API + '/studio-plugin/Roblox-Player-Role.rbxm';
@@ -158,7 +197,8 @@ pub fn render_games_page(base_url: &str) -> String {
         <div class="card universe-card" id="u-${{esc(u.universe_id)}}">
             <h3>${{esc(u.display_name || 'Game ' + u.universe_id)}} <span class="${{u.push_enabled ? 'badge-on' : 'badge-off'}}">push ${{u.push_enabled ? 'on' : 'off'}}</span> <span class="${{u.pull_enabled ? 'badge-on' : 'badge-off'}}">pull ${{u.pull_enabled ? 'on' : 'off'}}</span></h3>
             <p><span class="label">Universe ID</span> <code>${{esc(u.universe_id)}}</code></p>
-            <p><span class="label">Webhook URL</span></p>
+            ${{renderStatus(u)}}
+            <p style="margin-top:12px;"><span class="label">Webhook URL</span></p>
             <div class="secret-box">${{esc(ingestUrl)}}</div>
 
             <details style="margin-top:14px;">
@@ -201,28 +241,48 @@ pub fn render_games_page(base_url: &str) -> String {
                     <p style="margin-top:14px;"><strong>Step 2 — Install in Roblox Studio</strong></p>
                     <ol style="margin:6px 0 6px 20px; color:#b8bcc1;">
                         <li>Open your game's place file in <a href="https://create.roblox.com/dashboard/creations" target="_blank">Roblox Studio</a>.</li>
-                        <li><strong>File → Open</strong> and pick the downloaded <code>Roblox-Player-Role.rbxm</code>. A <code>Roblox-Player-Role</code> Script appears at the top of the Explorer.</li>
-                        <li>Drag that Script into <code>ServerScriptService</code>.</li>
+                        <li>In the <strong>Explorer</strong> panel, right-click <code>ServerScriptService</code> → <strong>Insert</strong> → <strong>Import Roblox Model</strong> (older Studio: <strong>Insert from File…</strong>) and pick the downloaded <code>Roblox-Player-Role.rbxm</code>. A <code>Roblox-Player-Role</code> Script appears inside <code>ServerScriptService</code>.</li>
+                        <li>Alternative: drag the <code>.rbxm</code> file directly from your file explorer into the Studio viewport, then drag the resulting Script into <code>ServerScriptService</code>. (<strong>File → Open</strong> only works for place files <code>.rbxl</code>/<code>.rbxlx</code>, not models.)</li>
                     </ol>
 
                     <p style="margin-top:14px;"><strong>Step 3 — Configure (paste your credentials)</strong></p>
-                    <p style="margin:6px 0;">Run the place once (F5) so the script can create its config holder. A <code>Configuration</code> instance named <code>RoleLogicConfig</code> appears in <code>ServerScriptService</code> with two <code>StringValue</code> children. Stop the test, then paste:</p>
+                    <p style="margin:6px 0;">In the Explorer, expand the <code>Roblox-Player-Role</code> Script and double-click its child <code>Config</code> ModuleScript. Set the two fields at the top:</p>
                     <ul style="margin:4px 0 4px 20px; color:#b8bcc1;">
-                        <li><code>WebhookUrl</code> →</li>
+                        <li><code>WebhookUrl = </code> the URL below (in quotes):</li>
                     </ul>
                     <div class="secret-box" style="margin:4px 0;">${{esc(ingestUrl)}}</div>
                     <ul style="margin:4px 0 4px 20px; color:#b8bcc1;">
-                        <li><code>IngestSecret</code> → the secret shown when you registered (or rotate via <em>Show ingest secret &amp; rotate</em> above).</li>
+                        <li><code>IngestSecret = </code> the secret shown when you registered (or rotate via <em>Show ingest secret &amp; rotate</em> above), in quotes.</li>
                     </ul>
+                    <p style="margin:6px 0; font-size:12px; color:#8a9099;">Save with Ctrl+S. (Advanced alternative: press F5, switch Explorer to <strong>Server</strong> view via the <strong>Test</strong> tab — a <code>RoleLogicConfig</code> Configuration appears under <code>ServerScriptService</code> with editable <code>StringValue</code> children. Values set this way only persist if you re-create the Configuration in Edit mode.)</p>
 
                     <p style="margin-top:14px;"><strong>Step 4 — Allow HTTP &amp; publish</strong></p>
                     <ol style="margin:6px 0 6px 20px; color:#b8bcc1;">
-                        <li><strong>Game Settings → Security → Allow HTTP Requests = ON</strong>.</li>
+                        <li><strong>File → Experience Settings</strong> (older Studio: <strong>Game Settings</strong>) → <strong>Security → Allow HTTP Requests = ON</strong> → Save.</li>
                         <li><strong>File → Publish to Roblox</strong>. Within ~60s of a player joining the live game, stats start arriving here (the <em>push</em> badge above flips on).</li>
                     </ol>
 
                     <p style="margin-top:14px;"><strong>Step 5 — Map your stats (optional)</strong></p>
                     <p style="margin:6px 0;">By default the plugin uploads <code>leaderstats</code> values named <code>Level</code>, <code>Wins</code>, <code>Losses</code>, <code>Coins</code>. To upload other values (e.g. attributes, custom names), open the <code>Config</code> ModuleScript inside the Script and edit <code>StatPaths</code>. Custom keys prefixed <code>custom.</code> become <code>stat_key</code> values usable in role conditions.</p>
+
+                    <p style="margin-top:14px;"><strong>Step 6 — Track playtime (optional)</strong></p>
+                    <p style="margin:6px 0;">The shipped Studio plugin does <strong>not</strong> track playtime by default. To enable the <em>Total in-game playtime (minutes)</em> condition, add a tracker script and map it.</p>
+                    <p style="margin:6px 0;"><strong>6a.</strong> If your game already has a <code>Playtime</code> <code>leaderstats</code> entry (in minutes), just append this to <code>StatPaths</code> in the <code>Config</code> ModuleScript:</p>
+                    <pre style="margin:4px 0;">{{ key = "playtime_minutes", lookup = "leaderstats:Playtime" }},</pre>
+                    <p style="margin:6px 0;"><strong>6b.</strong> If you have no playtime tracking, right-click <code>ServerScriptService</code> → <strong>Insert Object</strong> → <code>Script</code> (rename to <code>PlaytimeTracker</code>) and paste:</p>
+                    <pre style="margin:4px 0;">local Players = game:GetService("Players")
+Players.PlayerAdded:Connect(function(p)
+    p:SetAttribute("PlaytimeMinutes", 0)
+    task.spawn(function()
+        while p.Parent do
+            task.wait(60)
+            p:SetAttribute("PlaytimeMinutes", (p:GetAttribute("PlaytimeMinutes") or 0) + 1)
+        end
+    end)
+end)</pre>
+                    <p style="margin:6px 0;">Then append to <code>StatPaths</code> in the <code>Config</code> ModuleScript:</p>
+                    <pre style="margin:4px 0;">{{ key = "playtime_minutes", lookup = "attribute:PlaytimeMinutes" }},</pre>
+                    <p style="margin:6px 0; font-size:12px; color:#8a9099;">Note: this attribute resets on rejoin (no persistence). For permanent cumulative playtime, persist via <code>DataStoreService</code>.</p>
 
                     <p style="margin-top:10px; font-size:12px; color:#8a9099;">Troubleshooting: see Output in Studio for <code>[RoleLogic]</code> warnings. <code>WebhookUrl or IngestSecret not configured</code> means <code>RoleLogicConfig</code> values are still blank.</p>
                 </div>
@@ -342,10 +402,18 @@ pub async fn games_data(
         Option<chrono::DateTime<chrono::Utc>>,
         i32,
         sqlx::types::Json<serde_json::Value>,
+        i64,
+        Option<chrono::DateTime<chrono::Utc>>,
     )>(
-        "SELECT universe_id, display_name, push_enabled, pull_enabled, datastore_name, \
-         last_push_at, last_pull_at, poll_interval_seconds, stat_field_map \
-         FROM game_universes WHERE owner_discord_id = $1 ORDER BY created_at DESC",
+        "SELECT g.universe_id, g.display_name, g.push_enabled, g.pull_enabled, g.datastore_name, \
+         g.last_push_at, g.last_pull_at, g.poll_interval_seconds, g.stat_field_map, \
+         COALESCE(s.players_count, 0) AS players_count, s.last_fetched_at \
+         FROM game_universes g \
+         LEFT JOIN ( \
+             SELECT universe_id, COUNT(*)::bigint AS players_count, MAX(fetched_at) AS last_fetched_at \
+             FROM player_game_stats GROUP BY universe_id \
+         ) s ON s.universe_id = g.universe_id \
+         WHERE g.owner_discord_id = $1 ORDER BY g.created_at DESC",
     )
     .bind(&discord_id)
     .fetch_all(&state.pool)
@@ -364,6 +432,8 @@ pub async fn games_data(
                 "last_pull_at": r.6,
                 "poll_interval_seconds": r.7,
                 "stat_field_map": r.8.0,
+                "players_count": r.9,
+                "last_stat_fetched_at": r.10,
             })
         })
         .collect();
