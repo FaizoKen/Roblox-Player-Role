@@ -278,7 +278,7 @@ pub async fn callback(
     jar: CookieJar,
     Query(query): Query<CallbackQuery>,
 ) -> Result<Response, AppError> {
-    let (discord_id, _) = get_session(&jar, &state.config.session_secret)?;
+    let (discord_id, discord_username) = get_session(&jar, &state.config.session_secret)?;
 
     if let Some(err) = query.error {
         let desc = query.error_description.unwrap_or_else(|| err.clone());
@@ -351,9 +351,10 @@ pub async fn callback(
         .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
 
     sqlx::query(
-        "INSERT INTO linked_accounts (discord_id, roblox_user_id, roblox_username, roblox_display_name, refresh_token_encrypted) \
-         VALUES ($1, $2, $3, $4, $5) \
+        "INSERT INTO linked_accounts (discord_id, discord_username, roblox_user_id, roblox_username, roblox_display_name, refresh_token_encrypted) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT (discord_id) DO UPDATE SET \
+            discord_username = EXCLUDED.discord_username, \
             roblox_user_id = EXCLUDED.roblox_user_id, \
             roblox_username = EXCLUDED.roblox_username, \
             roblox_display_name = EXCLUDED.roblox_display_name, \
@@ -361,6 +362,7 @@ pub async fn callback(
             linked_at = now()",
     )
     .bind(&discord_id)
+    .bind(&discord_username)
     .bind(&roblox_user_id)
     .bind(&username)
     .bind(&display_name)

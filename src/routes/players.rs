@@ -28,6 +28,7 @@ fn sort_column(key: &str) -> Option<&'static str> {
         "fetched_at" => Some("uc.fetched_at"),
         "roblox_user_id" => Some("la.roblox_user_id"),
         "roblox_username" => Some("la.roblox_username"),
+        "discord_username" => Some("la.discord_username"),
         "linked_at" => Some("la.linked_at"),
         _ => None,
     }
@@ -104,7 +105,7 @@ pub fn render_players_page(base_url: &str) -> String {
     <div id="content" class="hidden">
         <div class="card">
             <div class="toolbar">
-                <div class="search-wrap"><input type="text" id="search" placeholder="Search by username, Roblox ID, or Discord ID..." /></div>
+                <div class="search-wrap"><input type="text" id="search" placeholder="Search by Roblox/Discord username or ID..." /></div>
                 <span class="badge" id="player-count"></span>
             </div>
             <table>
@@ -112,6 +113,7 @@ pub fn render_players_page(base_url: &str) -> String {
                     <tr>
                         <th data-key="roblox_username">Roblox Username</th>
                         <th data-key="roblox_user_id">Roblox ID</th>
+                        <th data-key="discord_username">Discord User</th>
                         <th data-key="friends_count" class="col-num">Friends</th>
                         <th data-key="badges_count" class="col-num">Badges</th>
                         <th data-key="fetched_at">Last Updated</th>
@@ -158,8 +160,11 @@ pub fn render_players_page(base_url: &str) -> String {
         if (players.length === 0) {{ emptyEl.classList.remove('hidden'); }} else {{ emptyEl.classList.add('hidden'); }}
         players.forEach(p => {{
             const tr = document.createElement('tr');
+            const discordLabel = p.discord_username || p.discord_id;
+            const discordTitle = p.discord_username ? ('Discord ID: ' + p.discord_id) : 'Discord username unknown — re-link to capture';
             tr.innerHTML = '<td>' + esc(p.roblox_username || '-') + '</td>' +
                 '<td class="col-id"><a href="https://www.roblox.com/users/' + esc(p.roblox_user_id) + '/profile" target="_blank" rel="noopener">' + esc(p.roblox_user_id) + '</a></td>' +
+                '<td title="' + esc(discordTitle) + '">' + esc(discordLabel) + '</td>' +
                 '<td class="col-num">' + (p.friends_count || 0) + '</td>' +
                 '<td class="col-num">' + (p.badges_count || 0) + '</td>' +
                 '<td class="col-date">' + timeAgo(p.fetched_at) + '</td>';
@@ -376,7 +381,7 @@ pub async fn players_data(
     let search_pattern = format!("%{search}%");
 
     let sql = format!(
-        "SELECT la.roblox_user_id, la.roblox_username, la.discord_id, \
+        "SELECT la.roblox_user_id, la.roblox_username, la.discord_id, la.discord_username, \
          uc.friends_count, uc.followers_count, uc.badges_count, uc.fetched_at, \
          COUNT(*) OVER() AS total_count \
          FROM linked_accounts la \
@@ -385,7 +390,7 @@ pub async fn players_data(
          ORDER BY {order_col} {order_dir} NULLS LAST \
          LIMIT $2 OFFSET $3",
         search_clause = if has_search {
-            "AND (la.roblox_username ILIKE $4 OR la.roblox_user_id ILIKE $4 OR la.discord_id ILIKE $4)"
+            "AND (la.roblox_username ILIKE $4 OR la.roblox_user_id ILIKE $4 OR la.discord_id ILIKE $4 OR la.discord_username ILIKE $4)"
         } else { "" }
     );
 
@@ -409,6 +414,7 @@ pub async fn players_data(
                 "roblox_user_id": r.get::<String, _>("roblox_user_id"),
                 "roblox_username": r.get::<Option<String>, _>("roblox_username"),
                 "discord_id": r.get::<String, _>("discord_id"),
+                "discord_username": r.get::<Option<String>, _>("discord_username"),
                 "friends_count": r.get::<i32, _>("friends_count"),
                 "followers_count": r.get::<i32, _>("followers_count"),
                 "badges_count": r.get::<i32, _>("badges_count"),

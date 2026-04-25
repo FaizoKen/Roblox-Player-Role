@@ -186,17 +186,14 @@ pub fn render_landing_page(base_url: &str) -> String {
             document.getElementById('loading').classList.add('hidden');
             document.getElementById('content').classList.remove('hidden');
             const c = document.getElementById('guilds');
-            if (!data.guilds || data.guilds.length === 0) {{
-                c.innerHTML = '<p>You aren\'t in any Discord servers we know about. Make sure you\'ve logged in to RoleLogic at least once.</p>';
+            const manageable = (data.guilds || []).filter(g => g.manage_guild);
+            if (manageable.length === 0) {{
+                c.innerHTML = '<p>No Discord servers found where you have <strong>Manage Server</strong> permission. Only server managers can register games.</p>';
                 return;
             }}
-            c.innerHTML = data.guilds.map(g => {{
+            c.innerHTML = manageable.map(g => {{
                 const label = g.guild_name || ('Server ' + g.guild_id);
-                const meta = g.manage_guild ? 'You have Manage Server permission' : 'No Manage Server permission';
-                const btn = g.manage_guild
-                    ? '<a class="btn" href="' + API + '/games/' + encodeURIComponent(g.guild_id) + '">Manage games</a>'
-                    : '<span class="btn btn-disabled">Not allowed</span>';
-                return '<div class="guild"><div><div class="guild-name">' + esc(label) + '</div><div class="guild-meta">' + esc(meta) + '</div></div>' + btn + '</div>';
+                return '<div class="guild"><div><div class="guild-name">' + esc(label) + '</div></div><a class="btn" href="' + API + '/games/' + encodeURIComponent(g.guild_id) + '">Manage games</a></div>';
             }}).join('');
         }} catch (e) {{
             document.getElementById('loading').classList.add('hidden');

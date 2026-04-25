@@ -32,4 +32,14 @@ pub async fn run_migrations(pool: &PgPool) {
         .execute(pool)
         .await
         .expect("Failed to run migration 004");
+
+    sqlx::raw_sql(include_str!("../migrations/005_game_universes_guild_scope.sql"))
+        .execute(pool)
+        .await
+        .expect("Failed to run migration 005");
+
+    sqlx::raw_sql(include_str!("../migrations/006_linked_accounts_discord_username.sql"))
+        .execute(pool)
+        .await
+        .expect("Failed to run migration 006");
 }
