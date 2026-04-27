@@ -380,31 +380,15 @@ pub fn render_games_page(base_url: &str) -> String {
         container.innerHTML = paths.map(function(p) {{
             const def = defaultCustomKey(p);
             const cur = saved[p];
-            // Enabled: include this field. Default ON when no saved map exists yet
-            // (first-time setup), else only if the field appears in the saved map.
             const enabled = hasSaved ? (cur !== undefined && cur !== null && cur !== '') : true;
-            const customDifferent = enabled && cur && cur !== def;
-            const customVal = customDifferent ? cur : '';
-            const showCustom = customDifferent;
-            return '<div class="mapper-row" style="margin:4px 0; padding:8px 10px; background:#1a1c1e; border-radius:6px; border:1px solid #3d4144;">' +
-                '<div style="display:flex; gap:10px; align-items:center;">' +
-                    '<input type="checkbox" data-enabled ' + (enabled ? 'checked' : '') + ' style="cursor:pointer; width:16px; height:16px;">' +
-                    '<code style="flex:1; padding:6px 10px; background:#232527; border-radius:6px; border:1px solid #3d4144; overflow-wrap:anywhere;">' + esc(p) + '</code>' +
-                    '<span style="color:#8a9099; font-size:12px;">→ <strong style="color:#b8bcc1;" data-default-label>' + esc(def) + '</strong></span>' +
-                    '<button type="button" class="btn-toggle-custom" style="padding:4px 10px; font-size:11px; background:transparent; color:#00a2ff; border:1px solid #3d4144; border-radius:6px; cursor:pointer;">' + (showCustom ? 'Hide' : 'Custom') + '</button>' +
-                '</div>' +
-                '<input type="text" data-path="' + esc(p) + '" data-custom placeholder="Custom key (defaults to ' + esc(def) + ')" value="' + esc(customVal) + '" class="' + (showCustom ? '' : 'hidden') + '" style="margin-top:6px; width:100%; padding:6px 10px; border-radius:6px; border:1px solid #3d4144; background:#232527; color:#ebedf0; font-family:inherit; font-size:13px;">' +
+            const keyVal = (cur && cur !== '') ? cur : def;
+            return '<div class="mapper-row" style="margin:4px 0; padding:8px 10px; background:#1a1c1e; border-radius:6px; border:1px solid #3d4144; display:flex; gap:10px; align-items:center;">' +
+                '<input type="checkbox" data-enabled ' + (enabled ? 'checked' : '') + ' style="cursor:pointer; width:16px; height:16px;">' +
+                '<code style="flex:1; padding:6px 10px; background:#232527; border-radius:6px; border:1px solid #3d4144; overflow-wrap:anywhere;">' + esc(p) + '</code>' +
+                '<span style="color:#8a9099;">→</span>' +
+                '<input type="text" data-path="' + esc(p) + '" data-custom value="' + esc(keyVal) + '" placeholder="' + esc(def) + '" style="flex:0 0 220px; padding:6px 10px; border-radius:6px; border:1px solid #3d4144; background:#232527; color:#ebedf0; font-family:inherit; font-size:13px;">' +
             '</div>';
         }}).join('');
-        container.querySelectorAll('.btn-toggle-custom').forEach(function(btn) {{
-            btn.addEventListener('click', function() {{
-                const row = btn.closest('.mapper-row');
-                const inp = row.querySelector('input[data-custom]');
-                inp.classList.toggle('hidden');
-                btn.textContent = inp.classList.contains('hidden') ? 'Custom' : 'Hide';
-                if (!inp.classList.contains('hidden')) inp.focus();
-            }});
-        }});
     }}
     function buildMapperJson(uid) {{
         const container = document.getElementById('oc-mapper-' + uid);
@@ -560,7 +544,7 @@ pub fn render_games_page(base_url: &str) -> String {
                     <p style="margin-top:8px;"><span class="label">Entry key template</span> — pattern your game uses to key each player's DataStore entry. Use the literal token <code>{{user_id}}</code> where the Roblox UserId goes (e.g. <code>Player_{{user_id}}</code>). Click <strong>Detect fields</strong> below to auto-fill from a sample entry.</p>
                     <div class="row" style="margin-top:4px;"><input type="text" id="oc-key-template-${{esc(u.universe_id)}}" placeholder="{{user_id}}" value="${{esc(u.entry_key_template || '{{user_id}}')}}"></div>
 
-                    <p style="margin-top:8px;"><span class="label">Stat field map</span> — checkbox toggles each field on/off. Toggled-on fields use the default key shown (the leaf segment) unless you click <strong>Custom</strong> to override. Unchecked fields are skipped.</p>
+                    <p style="margin-top:8px;"><span class="label">Stat field map</span> — checkbox toggles each field on/off. Each key defaults to the field name; edit it directly to use a different stat key. Unchecked fields are skipped.</p>
                     <div class="row" style="margin-bottom:6px;"><button class="btn" onclick="previewEntry('${{esc(u.universe_id)}}')">Detect fields from a sample entry</button></div>
                     <pre id="oc-sample-${{esc(u.universe_id)}}" class="hidden" style="margin:6px 0; max-height:240px; overflow:auto;"></pre>
                     <div id="oc-mapper-${{esc(u.universe_id)}}"></div>
