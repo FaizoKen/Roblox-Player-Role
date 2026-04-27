@@ -143,7 +143,7 @@ pub fn render_landing_page(base_url: &str) -> String {
         .btn-disabled {{ background: #3d4144; color: #8a9099; cursor: not-allowed; }}
         .login-btn {{ display: inline-block; padding: 10px 22px; border-radius: 6px; background: #5865f2; color: #fff; text-decoration: none; font-weight: 600; }}
         .hidden {{ display: none; }}
-        .msg {{ padding: 10px 14px; border-radius: 6px; font-size: 13px; }}
+        .msg {{ padding: 10px 14px; border-radius: 6px; font-size: 13px; position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1000; max-width: calc(100% - 32px); box-shadow: 0 6px 24px rgba(0,0,0,0.45); }}
         .msg-error {{ background: #1c0a0a; color: #fca5a5; border: 1px solid #7f1d1d; }}
     </style>
 </head>
@@ -240,7 +240,7 @@ pub fn render_games_page(base_url: &str) -> String {
         .universe-card {{ border-left: 3px solid #00a2ff; }}
         .label {{ color: #8a9099; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; display: block; }}
         .secret-box {{ background: #1a1c1e; padding: 10px 14px; border-radius: 6px; border: 1px solid #3d4144; font-family: 'Courier New', monospace; font-size: 12px; word-break: break-all; }}
-        .msg {{ padding: 10px 14px; border-radius: 6px; font-size: 13px; }}
+        .msg {{ padding: 10px 14px; border-radius: 6px; font-size: 13px; position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1000; max-width: calc(100% - 32px); box-shadow: 0 6px 24px rgba(0,0,0,0.45); }}
         .msg-error {{ background: #1c0a0a; color: #fca5a5; border: 1px solid #7f1d1d; }}
         .msg-success {{ background: #052e16; color: #86efac; border: 1px solid #14532d; }}
         .hidden {{ display: none; }}
@@ -376,24 +376,47 @@ pub fn render_games_page(base_url: &str) -> String {
             container.innerHTML = '<p style="color:#8a9099; font-size:12px; margin:6px 0;">No fields detected yet — click <strong>Detect fields from a sample entry</strong> above to load your DataStore schema.</p>';
             return;
         }}
+        const hasSaved = Object.keys(saved).length > 0;
         container.innerHTML = paths.map(function(p) {{
-            const cur = saved[p] || '';
-            return '<div class="mapper-row" style="display:flex; gap:8px; align-items:center; margin:4px 0;">' +
-                '<code style="flex:1; padding:6px 10px; background:#1a1c1e; border-radius:6px; border:1px solid #3d4144; overflow-wrap:anywhere;">' + esc(p) + '</code>' +
-                '<span style="color:#8a9099;">→</span>' +
-                '<input type="text" data-path="' + esc(p) + '" placeholder="' + esc(defaultCustomKey(p)) + ' (leave blank to skip)" value="' + esc(cur) + '" style="flex:0 0 240px; padding:6px 10px; border-radius:6px; border:1px solid #3d4144; background:#232527; color:#ebedf0; font-family:inherit; font-size:13px;">' +
+            const def = defaultCustomKey(p);
+            const cur = saved[p];
+            // Enabled: include this field. Default ON when no saved map exists yet
+            // (first-time setup), else only if the field appears in the saved map.
+            const enabled = hasSaved ? (cur !== undefined && cur !== null && cur !== '') : true;
+            const customDifferent = enabled && cur && cur !== def;
+            const customVal = customDifferent ? cur : '';
+            const showCustom = customDifferent;
+            return '<div class="mapper-row" style="margin:4px 0; padding:8px 10px; background:#1a1c1e; border-radius:6px; border:1px solid #3d4144;">' +
+                '<div style="display:flex; gap:10px; align-items:center;">' +
+                    '<input type="checkbox" data-enabled ' + (enabled ? 'checked' : '') + ' style="cursor:pointer; width:16px; height:16px;">' +
+                    '<code style="flex:1; padding:6px 10px; background:#232527; border-radius:6px; border:1px solid #3d4144; overflow-wrap:anywhere;">' + esc(p) + '</code>' +
+                    '<span style="color:#8a9099; font-size:12px;">→ <strong style="color:#b8bcc1;" data-default-label>' + esc(def) + '</strong></span>' +
+                    '<button type="button" class="btn-toggle-custom" style="padding:4px 10px; font-size:11px; background:transparent; color:#00a2ff; border:1px solid #3d4144; border-radius:6px; cursor:pointer;">' + (showCustom ? 'Hide' : 'Custom') + '</button>' +
+                '</div>' +
+                '<input type="text" data-path="' + esc(p) + '" data-custom placeholder="Custom key (defaults to ' + esc(def) + ')" value="' + esc(customVal) + '" class="' + (showCustom ? '' : 'hidden') + '" style="margin-top:6px; width:100%; padding:6px 10px; border-radius:6px; border:1px solid #3d4144; background:#232527; color:#ebedf0; font-family:inherit; font-size:13px;">' +
             '</div>';
         }}).join('');
+        container.querySelectorAll('.btn-toggle-custom').forEach(function(btn) {{
+            btn.addEventListener('click', function() {{
+                const row = btn.closest('.mapper-row');
+                const inp = row.querySelector('input[data-custom]');
+                inp.classList.toggle('hidden');
+                btn.textContent = inp.classList.contains('hidden') ? 'Custom' : 'Hide';
+                if (!inp.classList.contains('hidden')) inp.focus();
+            }});
+        }});
     }}
     function buildMapperJson(uid) {{
         const container = document.getElementById('oc-mapper-' + uid);
         if (!container) return {{}};
         const out = {{}};
         container.querySelectorAll('.mapper-row').forEach(function(row) {{
-            const inp = row.querySelector('input[data-path]');
+            const cb = row.querySelector('input[data-enabled]');
+            if (!cb || !cb.checked) return;
+            const inp = row.querySelector('input[data-custom]');
             if (!inp) return;
             const path = inp.getAttribute('data-path');
-            const target = inp.value.trim();
+            const target = inp.value.trim() || defaultCustomKey(path);
             if (path && target) out[path] = target;
         }});
         return out;
@@ -537,7 +560,7 @@ pub fn render_games_page(base_url: &str) -> String {
                     <p style="margin-top:8px;"><span class="label">Entry key template</span> — pattern your game uses to key each player's DataStore entry. Use the literal token <code>{{user_id}}</code> where the Roblox UserId goes (e.g. <code>Player_{{user_id}}</code>). Click <strong>Detect fields</strong> below to auto-fill from a sample entry.</p>
                     <div class="row" style="margin-top:4px;"><input type="text" id="oc-key-template-${{esc(u.universe_id)}}" placeholder="{{user_id}}" value="${{esc(u.entry_key_template || '{{user_id}}')}}"></div>
 
-                    <p style="margin-top:8px;"><span class="label">Stat field map</span> — give each value in your DataStore entry a custom stat key. The key is what role conditions reference (any non-blank name works). Leave blank to skip a field.</p>
+                    <p style="margin-top:8px;"><span class="label">Stat field map</span> — checkbox toggles each field on/off. Toggled-on fields use the default key shown (the leaf segment) unless you click <strong>Custom</strong> to override. Unchecked fields are skipped.</p>
                     <div class="row" style="margin-bottom:6px;"><button class="btn" onclick="previewEntry('${{esc(u.universe_id)}}')">Detect fields from a sample entry</button></div>
                     <pre id="oc-sample-${{esc(u.universe_id)}}" class="hidden" style="margin:6px 0; max-height:240px; overflow:auto;"></pre>
                     <div id="oc-mapper-${{esc(u.universe_id)}}"></div>
@@ -592,13 +615,14 @@ pub fn render_games_page(base_url: &str) -> String {
         if (!universe_id || !/^[0-9]+$/.test(universe_id)) return showMsg('Universe ID must be numeric', 'error');
         if (!open_cloud_api_key) return showMsg('Open Cloud API key is required to prove you own this universe', 'error');
         try {{
-            const r = await api('POST', '/games/' + encodeURIComponent(guildId), {{ universe_id, display_name, open_cloud_api_key, mode }});
-            const note = r.ingest_secret
-                ? 'Registered (push mode). Ingest secret (copy now — shown only once): ' + r.ingest_secret
-                : 'Registered (pull mode). Configure the DataStore name and field map in the Open Cloud DataStore section below.';
+            await api('POST', '/games/' + encodeURIComponent(guildId), {{ universe_id, display_name, open_cloud_api_key, mode }});
+            const note = mode === 'push'
+                ? 'Registered (push mode). Open the new game card below and click "Generate new secret" when you are ready to install the Studio plugin.'
+                : 'Registered (pull mode). Fetching DataStores and detecting fields…';
             showMsg(note, 'success');
             document.getElementById('new-open-cloud-key').value = '';
             await load();
+            if (mode === 'pull') {{ await autoSetupPull(universe_id); }}
         }} catch (e) {{ showMsg(e.message, 'error'); }}
     }}
     async function rotateSecret(uid) {{
@@ -638,6 +662,28 @@ pub fn render_games_page(base_url: &str) -> String {
     }}
     function onDsSelect(uid, value) {{
         if (value) document.getElementById('oc-ds-' + uid).value = value;
+    }}
+    async function autoSetupPull(uid) {{
+        try {{
+            const r = await api('GET', '/games/' + encodeURIComponent(guildId) + '/' + encodeURIComponent(uid) + '/datastores');
+            const list = r.datastores || [];
+            const sel = document.getElementById('oc-ds-select-' + uid);
+            if (!sel) return;
+            if (list.length === 0) {{
+                showMsg('Registered, but no DataStores found in this universe yet.', 'error');
+                return;
+            }}
+            sel.innerHTML = '<option value="">— pick one —</option>' + list.map(function(n) {{
+                return '<option value="' + esc(n) + '">' + esc(n) + '</option>';
+            }}).join('');
+            const first = list[0];
+            sel.value = first;
+            const dsInput = document.getElementById('oc-ds-' + uid);
+            if (dsInput) dsInput.value = first;
+            await previewEntry(uid);
+        }} catch (e) {{
+            showMsg('Auto-setup: ' + e.message, 'error');
+        }}
     }}
     async function fetchDatastores(uid) {{
         try {{
@@ -906,14 +952,11 @@ pub async fn create_universe(
         ));
     }
 
-    let mut response = json!({
+    let response = json!({
         "success": true,
         "universe_id": body.universe_id,
         "mode": mode,
     });
-    if mode == "push" {
-        response["ingest_secret"] = json!(secret);
-    }
     Ok(Json(response))
 }
 
