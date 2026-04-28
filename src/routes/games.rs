@@ -670,7 +670,22 @@ pub fn render_games_page(base_url: &str) -> String {
             );
             const confirmed = lastAny > 0 || (u.players_count || 0) > 0;
             if (confirmed) box.innerHTML = renderStatus(u);
-            if (pullBox) pullBox.innerHTML = renderPullSection(u);
+            if (pullBox) {{
+                // Preserve sample entry content before re-rendering
+                const oldSampleEl = document.getElementById('oc-sample-' + uid);
+                const sampleContent = oldSampleEl ? oldSampleEl.textContent : '';
+                const sampleHidden = oldSampleEl ? oldSampleEl.classList.contains('hidden') : true;
+                
+                pullBox.innerHTML = renderPullSection(u);
+                
+                // Restore sample entry content
+                const newSampleEl = document.getElementById('oc-sample-' + uid);
+                if (newSampleEl && sampleContent) {{
+                    newSampleEl.textContent = sampleContent;
+                    if (!sampleHidden) newSampleEl.classList.remove('hidden');
+                }}
+            }}
+            if (u.mode === 'pull') renderMapper(uid, null, u.stat_field_map || {{}});
             return confirmed;
         }} catch (e) {{ return false; }}
     }}
@@ -753,7 +768,27 @@ pub fn render_games_page(base_url: &str) -> String {
             await api('POST', '/games/' + encodeURIComponent(guildId) + '/' + encodeURIComponent(uid) + '/open-cloud',
                 {{ open_cloud_api_key: '', datastore_name: '', stat_field_map: {{}} }});
             showMsg('Pull disabled.', 'success');
-            await load();
+            const data = await api('GET', '/games/' + encodeURIComponent(guildId) + '/data');
+            const u = (data.universes || []).find(function(x) {{ return x.universe_id === uid; }});
+            if (u) {{
+                const box = document.getElementById('status-' + uid);
+                const pullBox = document.getElementById('pull-section-' + uid);
+                if (box) box.innerHTML = renderStatus(u);
+                if (pullBox) {{
+                    const oldSampleEl = document.getElementById('oc-sample-' + uid);
+                    const sampleContent = oldSampleEl ? oldSampleEl.textContent : '';
+                    const sampleHidden = oldSampleEl ? oldSampleEl.classList.contains('hidden') : true;
+                    
+                    pullBox.innerHTML = renderPullSection(u);
+                    
+                    const newSampleEl = document.getElementById('oc-sample-' + uid);
+                    if (newSampleEl && sampleContent) {{
+                        newSampleEl.textContent = sampleContent;
+                        if (!sampleHidden) newSampleEl.classList.remove('hidden');
+                    }}
+                }}
+                if (u.mode === 'pull') renderMapper(uid, null, u.stat_field_map || {{}});
+            }}
         }} catch (e) {{ showMsg(e.message, 'error'); }}
     }}
     async function deleteUniverse(uid) {{
