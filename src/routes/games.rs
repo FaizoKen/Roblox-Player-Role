@@ -643,6 +643,15 @@ pub fn render_games_page(base_url: &str) -> String {
             showMsg('Open Cloud config saved. Waiting for first poll to confirm setup…', 'success');
             const box = document.getElementById('status-' + uid);
             if (box) box.innerHTML = '<div class="status-box"><div class="status-dot status-none"></div><div style="flex:1;"><div class="status-text"><strong>Saved — waiting for first poll…</strong></div><div class="status-meta">Polling has just started. The status will update once the first DataStore fetch completes (usually within 10–30s).</div></div></div>';
+            // Update the polling status text to active
+            const details = document.getElementById('pull-' + uid);
+            if (details) {{
+                const ps = details.querySelectorAll('p');
+                const lastP = ps[ps.length - 1];
+                if (lastP && lastP.innerHTML.includes('Polling is')) {{
+                    lastP.innerHTML = 'Polling is <strong style="color:#4ade80;">active</strong>.';
+                }}
+            }}
             // Poll for fresh status: the worker needs a moment to run the first
             // fetch after save. Try a few times with backoff before giving up.
             const delays = [3000, 5000, 8000, 12000, 20000];
