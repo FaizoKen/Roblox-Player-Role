@@ -437,6 +437,44 @@ pub fn render_games_page(base_url: &str) -> String {
         }}
         return '<div class="status-box"><div class="status-dot ' + dot + '"></div><div style="flex:1;"><div class="status-text">' + title + '</div><div class="status-meta">' + meta + '</div></div></div>';
     }}
+    function renderPullSection(u) {{
+        const isPull = u.mode === 'pull';
+        if (!isPull) return '';
+        return `
+            <details style="margin-top:14px;" open>
+                <summary style="cursor:pointer; color:#00a2ff;"><strong>Open Cloud DataStore configuration</strong></summary>
+                <div style="margin-top:8px;">
+                    <p>Your Open Cloud key is already saved (encrypted) from registration. To start polling, the saved key needs three operations under the <strong>universe-datastores</strong> API System (Restrict by Experience ON, scoped to this universe): <strong>controls.list</strong>, <strong>objects.list</strong>, and <strong>objects.read</strong>. Add any that are missing in the Roblox dashboard (open the operations dropdown and scroll — they're under different sub-groups).</p>
+                    <div class="row"><input type="text" id="oc-key-${{esc(u.universe_id)}}" placeholder="Replace API key (leave blank to keep saved key)"></div>
+
+                    <p style="margin-top:8px;"><span class="label">DataStore name</span></p>
+                    <div class="row">
+                        <select id="oc-ds-select-${{esc(u.universe_id)}}" style="flex:1; padding:8px 12px; border-radius:6px; border:1px solid #3d4144; background:#232527; color:#ebedf0; font-family:inherit; font-size:13px;" onchange="onDsSelect('${{esc(u.universe_id)}}', this.value)">
+                            <option value="">${{u.datastore_name ? '— change —' : '— pick one —'}}</option>
+                            ${{u.datastore_name ? '<option value="' + esc(u.datastore_name) + '" selected>' + esc(u.datastore_name) + '</option>' : ''}}
+                        </select>
+                        <button class="btn" onclick="fetchDatastores('${{esc(u.universe_id)}}')">Fetch DataStores</button>
+                    </div>
+                    <input type="text" id="oc-ds-${{esc(u.universe_id)}}" placeholder="…or type DataStore name manually (e.g. PlayerData)" value="${{esc(u.datastore_name || '')}}" style="width:100%; padding:8px 12px; border-radius:6px; border:1px solid #3d4144; background:#232527; color:#ebedf0; font-family:inherit; font-size:13px; margin-top:6px;">
+
+                    <div class="row" style="margin-top:8px;"><input type="number" id="oc-poll-${{esc(u.universe_id)}}" placeholder="Poll interval (seconds)" value="${{u.poll_interval_seconds || 600}}"></div>
+
+                    <p style="margin-top:8px;"><span class="label">Entry key template</span> — pattern your game uses to key each player's DataStore entry. Use the literal token <code>{{user_id}}</code> where the Roblox UserId goes (e.g. <code>Player_{{user_id}}</code>). Click <strong>Detect fields</strong> below to auto-fill from a sample entry.</p>
+                    <div class="row" style="margin-top:4px;"><input type="text" id="oc-key-template-${{esc(u.universe_id)}}" placeholder="{{user_id}}" value="${{esc(u.entry_key_template || '{{user_id}}')}}"></div>
+
+                    <p style="margin-top:8px;"><span class="label">Stat field map</span> — checkbox toggles each field on/off. Each key defaults to the field name; edit it directly to use a different stat key. Unchecked fields are skipped.</p>
+                    <div class="row" style="margin-bottom:6px;"><button class="btn" onclick="previewEntry('${{esc(u.universe_id)}}')">Detect fields from a sample entry</button></div>
+                    <pre id="oc-sample-${{esc(u.universe_id)}}" class="hidden" style="margin:6px 0; max-height:240px; overflow:auto;"></pre>
+                    <div id="oc-mapper-${{esc(u.universe_id)}}"></div>
+
+                    <div class="row" style="margin-top:8px;">
+                        <button class="btn" onclick="saveOpenCloud('${{esc(u.universe_id)}}')">Save DataStore config</button>
+                        <button class="btn btn-danger" onclick="clearOpenCloud('${{esc(u.universe_id)}}')">Pause polling</button>
+                    </div>
+                    <p style="font-size:12px; color:#8a9099; margin-top:6px;">Polling is ${{u.pull_enabled ? '<strong style="color:#4ade80;">active</strong>' : '<strong style="color:#fbbf24;">not active yet</strong> — fill in DataStore name and Save'}}.</p>
+                </div>
+            </details>`;
+    }}
     function renderUniverse(u) {{
         const ingestUrl = API + '/ingest/' + encodeURIComponent(u.universe_id) + '/stats';
         const rbxmUrl = API + '/studio-plugin/Roblox-Player-Role.rbxm';
@@ -522,48 +560,13 @@ pub fn render_games_page(base_url: &str) -> String {
                 <pre>${{esc(luaSnippet)}}</pre>
             </details>` : '';
 
-        const pullSection = isPull ? `
-            <details style="margin-top:14px;" open>
-                <summary style="cursor:pointer; color:#00a2ff;"><strong>Open Cloud DataStore configuration</strong></summary>
-                <div style="margin-top:8px;">
-                    <p>Your Open Cloud key is already saved (encrypted) from registration. To start polling, the saved key needs three operations under the <strong>universe-datastores</strong> API System (Restrict by Experience ON, scoped to this universe): <strong>controls.list</strong>, <strong>objects.list</strong>, and <strong>objects.read</strong>. Add any that are missing in the Roblox dashboard (open the operations dropdown and scroll — they're under different sub-groups).</p>
-                    <div class="row"><input type="text" id="oc-key-${{esc(u.universe_id)}}" placeholder="Replace API key (leave blank to keep saved key)"></div>
-
-                    <p style="margin-top:8px;"><span class="label">DataStore name</span></p>
-                    <div class="row">
-                        <select id="oc-ds-select-${{esc(u.universe_id)}}" style="flex:1; padding:8px 12px; border-radius:6px; border:1px solid #3d4144; background:#232527; color:#ebedf0; font-family:inherit; font-size:13px;" onchange="onDsSelect('${{esc(u.universe_id)}}', this.value)">
-                            <option value="">${{u.datastore_name ? '— change —' : '— pick one —'}}</option>
-                            ${{u.datastore_name ? '<option value="' + esc(u.datastore_name) + '" selected>' + esc(u.datastore_name) + '</option>' : ''}}
-                        </select>
-                        <button class="btn" onclick="fetchDatastores('${{esc(u.universe_id)}}')">Fetch DataStores</button>
-                    </div>
-                    <input type="text" id="oc-ds-${{esc(u.universe_id)}}" placeholder="…or type DataStore name manually (e.g. PlayerData)" value="${{esc(u.datastore_name || '')}}" style="width:100%; padding:8px 12px; border-radius:6px; border:1px solid #3d4144; background:#232527; color:#ebedf0; font-family:inherit; font-size:13px; margin-top:6px;">
-
-                    <div class="row" style="margin-top:8px;"><input type="number" id="oc-poll-${{esc(u.universe_id)}}" placeholder="Poll interval (seconds)" value="${{u.poll_interval_seconds || 600}}"></div>
-
-                    <p style="margin-top:8px;"><span class="label">Entry key template</span> — pattern your game uses to key each player's DataStore entry. Use the literal token <code>{{user_id}}</code> where the Roblox UserId goes (e.g. <code>Player_{{user_id}}</code>). Click <strong>Detect fields</strong> below to auto-fill from a sample entry.</p>
-                    <div class="row" style="margin-top:4px;"><input type="text" id="oc-key-template-${{esc(u.universe_id)}}" placeholder="{{user_id}}" value="${{esc(u.entry_key_template || '{{user_id}}')}}"></div>
-
-                    <p style="margin-top:8px;"><span class="label">Stat field map</span> — checkbox toggles each field on/off. Each key defaults to the field name; edit it directly to use a different stat key. Unchecked fields are skipped.</p>
-                    <div class="row" style="margin-bottom:6px;"><button class="btn" onclick="previewEntry('${{esc(u.universe_id)}}')">Detect fields from a sample entry</button></div>
-                    <pre id="oc-sample-${{esc(u.universe_id)}}" class="hidden" style="margin:6px 0; max-height:240px; overflow:auto;"></pre>
-                    <div id="oc-mapper-${{esc(u.universe_id)}}"></div>
-
-                    <div class="row" style="margin-top:8px;">
-                        <button class="btn" onclick="saveOpenCloud('${{esc(u.universe_id)}}')">Save DataStore config</button>
-                        <button class="btn btn-danger" onclick="clearOpenCloud('${{esc(u.universe_id)}}')">Pause polling</button>
-                    </div>
-                    <p style="font-size:12px; color:#8a9099; margin-top:6px;">Polling is ${{u.pull_enabled ? '<strong style="color:#4ade80;">active</strong>' : '<strong style="color:#fbbf24;">not active yet</strong> — fill in DataStore name and Save'}}.</p>
-                </div>
-            </details>` : '';
-
         return `
         <div class="card universe-card" id="u-${{esc(u.universe_id)}}">
             <h3>${{esc(u.display_name || 'Game ' + u.universe_id)}} ${{modeBadge}}</h3>
             <p><span class="label">Universe ID</span> <code>${{esc(u.universe_id)}}</code></p>
             <div id="status-${{esc(u.universe_id)}}">${{renderStatus(u)}}</div>
             ${{pushSection}}
-            ${{pullSection}}
+            <div id="pull-section-${{esc(u.universe_id)}}">${{renderPullSection(u)}}</div>
             <div style="margin-top:18px;">
                 <button class="btn btn-danger" onclick="deleteUniverse('${{esc(u.universe_id)}}')">Delete this game</button>
             </div>
@@ -658,6 +661,7 @@ pub fn render_games_page(base_url: &str) -> String {
             const data = await api('GET', '/games/' + encodeURIComponent(guildId) + '/data');
             const u = (data.universes || []).find(function(x) {{ return x.universe_id === uid; }});
             const box = document.getElementById('status-' + uid);
+            const pullBox = document.getElementById('pull-section-' + uid);
             if (!u || !box) return false;
             const lastAny = Math.max(
                 u.last_push_at ? new Date(u.last_push_at).getTime() : 0,
@@ -666,6 +670,7 @@ pub fn render_games_page(base_url: &str) -> String {
             );
             const confirmed = lastAny > 0 || (u.players_count || 0) > 0;
             if (confirmed) box.innerHTML = renderStatus(u);
+            if (pullBox) pullBox.innerHTML = renderPullSection(u);
             return confirmed;
         }} catch (e) {{ return false; }}
     }}
