@@ -17,13 +17,9 @@ pub enum ConditionField {
     // Group (requires group_id; GroupRoleRank also uses operator + value)
     InGroup,
     GroupRoleRank,
-    // Per-game (require universe_id + the matching field)
-    GamePlaytimeMinutes,
-    GameLevel,
-    GameWins,
-    GameLosses,
-    GameCurrency,
-    HasGameAchievement,
+    // Per-game custom stats (require universe_id + stat_key). Every in-game
+    // stat the Studio plugin / pull worker reports is keyed in the `custom`
+    // JSONB blob; the type variants here pick how to compare it.
     CustomNumeric,
     CustomBoolean,
     CustomString,
@@ -43,21 +39,13 @@ impl ConditionField {
     }
 
     pub fn is_string_exact(&self) -> bool {
-        matches!(self, Self::HasGameAchievement | Self::CustomString)
+        matches!(self, Self::CustomString)
     }
 
     pub fn requires_universe(&self) -> bool {
         matches!(
             self,
-            Self::GamePlaytimeMinutes
-                | Self::GameLevel
-                | Self::GameWins
-                | Self::GameLosses
-                | Self::GameCurrency
-                | Self::HasGameAchievement
-                | Self::CustomNumeric
-                | Self::CustomBoolean
-                | Self::CustomString
+            Self::CustomNumeric | Self::CustomBoolean | Self::CustomString
         )
     }
 
@@ -104,12 +92,6 @@ impl ConditionField {
             Self::OwnsAsset => "ownsAsset",
             Self::InGroup => "inGroup",
             Self::GroupRoleRank => "groupRoleRank",
-            Self::GamePlaytimeMinutes => "gamePlaytimeMinutes",
-            Self::GameLevel => "gameLevel",
-            Self::GameWins => "gameWins",
-            Self::GameLosses => "gameLosses",
-            Self::GameCurrency => "gameCurrency",
-            Self::HasGameAchievement => "hasGameAchievement",
             Self::CustomNumeric => "customNumeric",
             Self::CustomBoolean => "customBoolean",
             Self::CustomString => "customString",
@@ -129,12 +111,6 @@ impl ConditionField {
             "ownsAsset" => Some(Self::OwnsAsset),
             "inGroup" => Some(Self::InGroup),
             "groupRoleRank" => Some(Self::GroupRoleRank),
-            "gamePlaytimeMinutes" => Some(Self::GamePlaytimeMinutes),
-            "gameLevel" => Some(Self::GameLevel),
-            "gameWins" => Some(Self::GameWins),
-            "gameLosses" => Some(Self::GameLosses),
-            "gameCurrency" => Some(Self::GameCurrency),
-            "hasGameAchievement" => Some(Self::HasGameAchievement),
             "customNumeric" => Some(Self::CustomNumeric),
             "customBoolean" => Some(Self::CustomBoolean),
             "customString" => Some(Self::CustomString),
@@ -151,18 +127,6 @@ impl ConditionField {
             Self::FollowersCount => Some("uc.followers_count"),
             Self::FollowingCount => Some("uc.following_count"),
             Self::BadgesCount => Some("uc.badges_count"),
-            _ => None,
-        }
-    }
-
-    /// PostgreSQL column on the `pgs_<universe> pgs` alias for per-game numeric stats.
-    pub fn player_game_stats_column(&self) -> Option<&'static str> {
-        match self {
-            Self::GamePlaytimeMinutes => Some("pgs.playtime_minutes"),
-            Self::GameLevel => Some("pgs.level"),
-            Self::GameWins => Some("pgs.wins"),
-            Self::GameLosses => Some("pgs.losses"),
-            Self::GameCurrency => Some("pgs.currency"),
             _ => None,
         }
     }

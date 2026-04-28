@@ -78,20 +78,11 @@ end
 
 local function snapshotPlayer(player)
     local stats = {}
-    local custom = {}
     for _, mapping in ipairs(Config.StatPaths) do
         local val = readLookup(player, mapping.lookup)
         if val ~= nil then
-            local key = mapping.key
-            if key:sub(1, 7) == "custom." then
-                custom[key:sub(8)] = val
-            else
-                stats[key] = val
-            end
+            stats[mapping.key] = val
         end
-    end
-    if next(custom) ~= nil then
-        stats.custom = custom
     end
     return { user_id = tostring(player.UserId), stats = stats }
 end

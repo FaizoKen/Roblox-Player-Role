@@ -8,7 +8,7 @@ Members link their Roblox account once. The plugin then assigns Discord roles au
 
 - **Account** — account age, Premium subscription, verified badge, friend / follower / following / badge counts, ownership of a specific badge / gamepass / asset.
 - **Group** — membership in a Roblox group, or a minimum role rank within it.
-- **Game** — per-game stats (playtime, level, wins, losses, currency, achievements, custom numeric/boolean/string fields) for any Roblox game whose owner has registered an integration on the `/games` page.
+- **Game** — per-game stats reported by any Roblox game whose owner has registered an integration on the `/games` page. Every reported stat is keyed by a free-form name (e.g. `level`, `timePlayed`, `guild_score`, `isVIP`) and exposed as Custom Numeric / Boolean / String role conditions.
 
 Per-game stats can reach the plugin in two ways:
 
@@ -66,20 +66,20 @@ Stat payload shape (push):
     {
       "user_id": "12345",
       "stats": {
-        "playtime_minutes": 120,
         "level": 7,
         "wins": 3,
         "losses": 1,
         "currency": 5000,
-        "achievements": ["first_blood", "speedrun"],
-        "custom": { "guild_score": 42, "is_vip": true }
+        "timePlayed": 120,
+        "guild_score": 42,
+        "isVIP": true
       }
     }
   ]
 }
 ```
 
-Each field is optional; partial updates only overwrite what you send. `custom` is shallow-merged.
+`stats` is a flat key→value map. Keys are arbitrary; the server stores the whole object as the player's `custom` blob and exposes each key in the role-condition stat dropdown. Partial updates shallow-merge: keys you don't send are left untouched.
 
 ## Scale
 

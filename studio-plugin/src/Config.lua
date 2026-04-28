@@ -20,11 +20,15 @@
       - "leaderstats:Name"      → reads player.leaderstats.<Name>.Value
       - "attribute:Name"        → reads player:GetAttribute("Name")
       - function(player) ... end → arbitrary getter you write
+      
+    After finishing setup, dont forget to allow HTTP & publish:
+   		File → Experience Settings → Security → Allow HTTP Requests = ON.
+		File → Publish to Roblox.
 --]]
 
 local Config = {}
 
-Config.WebhookUrl = ""    -- e.g. "https://example.com/roblox-player-role/ingest/123456/stats"
+Config.WebhookUrl = ""    -- e.g. "https://plugin-rolelogic.faizo.net/roblox-player-role/ingest/123456/stats"
 Config.IngestSecret = ""  -- copy from the /games admin page; rotate via the same page
 Config.BatchIntervalSeconds = 60
 
@@ -33,26 +37,13 @@ Config.StatPaths = {
     { key = "wins",             lookup = "leaderstats:Wins" },
     { key = "losses",           lookup = "leaderstats:Losses" },
     { key = "currency",         lookup = "leaderstats:Coins" },
-    -- Playtime is not tracked by Roblox out of the box. To enable the
-    -- "Total in-game playtime (minutes)" role condition, wire a tracker
-    -- (see studio-plugin/README.md) and uncomment one of:
-    -- { key = "playtime_minutes", lookup = "leaderstats:Playtime" },
-    -- { key = "playtime_minutes", lookup = "attribute:PlaytimeMinutes" },
-    -- Achievements: a list of string keys the player has earned. Used by the
-    -- "Has a specific in-game achievement" role condition (the dashboard
-    -- "Value" field is matched against entries in this list, e.g. "first_blood").
-    -- Roblox has no built-in achievement system — return whatever flags your
-    -- game tracks (attributes, badges, DataStore-loaded set, etc.) as an array.
-    -- Example using attributes:
-    -- { key = "achievements", lookup = function(player)
-    --     local earned = {}
-    --     for _, name in ipairs({ "first_blood", "speedrun", "boss_killed" }) do
-    --         if player:GetAttribute("ach_" .. name) then
-    --             table.insert(earned, name)
-    --         end
-    --     end
-    --     return earned
-    -- end },
+	-- you can add more stats here — every key is a free-form name that shows
+	-- up in the role-condition stat dropdown verbatim. Examples:
+	-- { key = "timePlayed",       lookup = "leaderstats:TimePlayed" },
+	-- { key = "kittens",          lookup = "leaderstats:Kittens" },
+	-- { key = "isVIP",            lookup = function(player) return player:GetAttribute("VIP") end },
+	-- { key = "currentZone",      lookup = "attribute:CurrentZone" },
+	-- { key = "equippedPetId",    lookup = function(player) return player:GetAttribute("EquippedPetId") end },
 }
 
 return Config

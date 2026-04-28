@@ -119,9 +119,9 @@ pub async fn sync_for_player(discord_id: &str, state: &AppState) -> Result<(), A
 
     let mut game_stats: HashMap<String, PlayerGameStatsRow> = HashMap::new();
     for universe_id in &needed_universes {
-        if let Ok(Some(g)) = sqlx::query_as::<_, (i32, i32, i32, i32, i64, serde_json::Value, serde_json::Value)>(
-            "SELECT playtime_minutes, level, wins, losses, currency, achievements, custom \
-             FROM player_game_stats WHERE roblox_user_id = $1 AND universe_id = $2",
+        if let Ok(Some(g)) = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT custom FROM player_game_stats \
+             WHERE roblox_user_id = $1 AND universe_id = $2",
         )
         .bind(&user_cache.roblox_user_id)
         .bind(universe_id)
@@ -130,15 +130,7 @@ pub async fn sync_for_player(discord_id: &str, state: &AppState) -> Result<(), A
         {
             game_stats.insert(
                 universe_id.clone(),
-                PlayerGameStatsRow {
-                    playtime_minutes: g.0,
-                    level: g.1,
-                    wins: g.2,
-                    losses: g.3,
-                    currency: g.4,
-                    achievements: g.5,
-                    custom: g.6,
-                },
+                PlayerGameStatsRow { custom: g.0 },
             );
         }
     }
@@ -247,10 +239,7 @@ enum ConditionBind {
 /// fast bulk path. Returns ("TRUE"/"FALSE"/clauses, binds, needs_eval) where
 /// needs_eval=true means at least one condition could not be SQL-resolved
 /// (custom JSON / per-game extras) and the candidates must be re-checked in Rust.
-fn build_condition_where(
-    conditions: &[Condition],
-    universe_alias_map: &HashMap<String, String>,
-) -> (String, Vec<ConditionBind>, bool) {
+fn build_condition_where(conditions: &[Condition]) -> (String, Vec<ConditionBind>, bool) {
     if conditions.is_empty() {
         return ("FALSE".to_string(), vec![], false);
     }
@@ -362,34 +351,9 @@ fn build_condition_where(
                     return ("FALSE".into(), vec![], false);
                 }
             }
-            // Per-universe numeric stats
-            ConditionField::GamePlaytimeMinutes
-            | ConditionField::GameLevel
-            | ConditionField::GameWins
-            | ConditionField::GameLosses
-            | ConditionField::GameCurrency => {
-                let universe_id = match condition.universe_id.as_deref() {
-                    Some(s) => s,
-                    None => return ("FALSE".into(), vec![], false),
-                };
-                let alias = match universe_alias_map.get(universe_id) {
-                    Some(a) => a.clone(),
-                    None => return ("FALSE".into(), vec![], false),
-                };
-                let col_suffix = match &condition.field {
-                    ConditionField::GamePlaytimeMinutes => "playtime_minutes",
-                    ConditionField::GameLevel => "level",
-                    ConditionField::GameWins => "wins",
-                    ConditionField::GameLosses => "losses",
-                    ConditionField::GameCurrency => "currency",
-                    _ => unreachable!(),
-                };
-                let col = format!("{alias}.{col_suffix}");
-                push_numeric_clause(&mut clauses, &mut binds, &col, condition);
-            }
-            // These can't be SQL-evaluated cleanly; flag eval pass.
-            ConditionField::HasGameAchievement
-            | ConditionField::CustomNumeric
+            // Per-game custom stats live in JSONB; resolve in Rust on the
+            // post-filter pass instead of pushing into SQL.
+            ConditionField::CustomNumeric
             | ConditionField::CustomBoolean
             | ConditionField::CustomString => {
                 needs_eval = true;
@@ -536,7 +500,7 @@ pub async fn sync_for_role_link(
         }
     }
 
-    let (where_clause, binds, needs_eval) = build_condition_where(&conditions, &universe_alias_map);
+    let (where_clause, binds, needs_eval) = build_condition_where(&conditions);
 
     let qualifying_ids: Vec<String> = if needs_eval {
         // Fall back to the fetch-and-evaluate path for custom JSON / achievement conditions
@@ -620,17 +584,7 @@ async fn evaluate_role_link_in_memory(
 
     let select_extras: Vec<String> = universe_alias_map
         .values()
-        .flat_map(|a| {
-            vec![
-                format!("{a}.playtime_minutes AS {a}_playtime"),
-                format!("{a}.level AS {a}_level"),
-                format!("{a}.wins AS {a}_wins"),
-                format!("{a}.losses AS {a}_losses"),
-                format!("{a}.currency AS {a}_currency"),
-                format!("{a}.achievements AS {a}_achievements"),
-                format!("{a}.custom AS {a}_custom"),
-            ]
-        })
+        .map(|a| format!("{a}.custom AS {a}_custom"))
         .collect();
 
     let extras_sql = if select_extras.is_empty() {
@@ -670,24 +624,10 @@ async fn evaluate_role_link_in_memory(
         let mut game_stats: HashMap<String, PlayerGameStatsRow> = HashMap::new();
         for (uid, alias) in universe_alias_map {
             // Each LEFT JOIN may produce NULLs; treat absent rows as no stats.
-            let pt: Option<i32> = r.try_get(format!("{alias}_playtime").as_str()).ok();
-            if let Some(pt_val) = pt {
-                game_stats.insert(
-                    uid.clone(),
-                    PlayerGameStatsRow {
-                        playtime_minutes: pt_val,
-                        level: r.try_get(format!("{alias}_level").as_str()).unwrap_or(0),
-                        wins: r.try_get(format!("{alias}_wins").as_str()).unwrap_or(0),
-                        losses: r.try_get(format!("{alias}_losses").as_str()).unwrap_or(0),
-                        currency: r.try_get(format!("{alias}_currency").as_str()).unwrap_or(0),
-                        achievements: r
-                            .try_get(format!("{alias}_achievements").as_str())
-                            .unwrap_or(serde_json::Value::Array(vec![])),
-                        custom: r
-                            .try_get(format!("{alias}_custom").as_str())
-                            .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
-                    },
-                );
+            let custom: Option<serde_json::Value> =
+                r.try_get(format!("{alias}_custom").as_str()).ok();
+            if let Some(c) = custom {
+                game_stats.insert(uid.clone(), PlayerGameStatsRow { custom: c });
             }
         }
 

@@ -18,12 +18,6 @@ pub struct UserCacheRow {
 
 /// One row from `player_game_stats` for a specific universe.
 pub struct PlayerGameStatsRow {
-    pub playtime_minutes: i32,
-    pub level: i32,
-    pub wins: i32,
-    pub losses: i32,
-    pub currency: i64,
-    pub achievements: serde_json::Value,
     pub custom: serde_json::Value,
 }
 
@@ -137,14 +131,8 @@ fn evaluate_single(
             let expected = condition.value.as_i64().unwrap_or(0);
             compare_int(actual, expected, &condition.operator, &condition.value_end)
         }
-        // Game-specific fields
-        ConditionField::GamePlaytimeMinutes
-        | ConditionField::GameLevel
-        | ConditionField::GameWins
-        | ConditionField::GameLosses
-        | ConditionField::GameCurrency
-        | ConditionField::HasGameAchievement
-        | ConditionField::CustomNumeric
+        // Game-specific fields — all custom-keyed.
+        ConditionField::CustomNumeric
         | ConditionField::CustomBoolean
         | ConditionField::CustomString => {
             let universe_id = match condition.universe_id.as_deref() {
@@ -162,17 +150,6 @@ fn evaluate_single(
 
 fn evaluate_game(condition: &Condition, row: &PlayerGameStatsRow) -> bool {
     match &condition.field {
-        ConditionField::GamePlaytimeMinutes => num_compare(row.playtime_minutes as i64, condition),
-        ConditionField::GameLevel => num_compare(row.level as i64, condition),
-        ConditionField::GameWins => num_compare(row.wins as i64, condition),
-        ConditionField::GameLosses => num_compare(row.losses as i64, condition),
-        ConditionField::GameCurrency => num_compare(row.currency, condition),
-        ConditionField::HasGameAchievement => {
-            let key = condition.value.as_str().unwrap_or("");
-            row.achievements
-                .as_array()
-                .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(key)))
-        }
         ConditionField::CustomNumeric => {
             let key = match condition.stat_key.as_deref() {
                 Some(s) => s,
@@ -340,22 +317,16 @@ mod tests {
     }
 
     #[test]
-    fn game_level_gte_with_universe_data() {
+    fn custom_numeric_stat_gte_with_universe_data() {
         let mut gs = HashMap::new();
         gs.insert(
             "u1".to_string(),
             PlayerGameStatsRow {
-                playtime_minutes: 600,
-                level: 12,
-                wins: 5,
-                losses: 1,
-                currency: 1000,
-                achievements: json!(["first_blood"]),
-                custom: json!({"vip": true, "score": 9000}),
+                custom: json!({"level": 12, "vip": true, "score": 9000}),
             },
         );
         let cs = vec![Condition {
-            field: ConditionField::GameLevel,
+            field: ConditionField::CustomNumeric,
             operator: ConditionOperator::Gte,
             value: json!(10),
             value_end: None,
@@ -364,7 +335,7 @@ mod tests {
             badge_id: None,
             gamepass_id: None,
             asset_id: None,
-            stat_key: None,
+            stat_key: Some("level".into()),
         }];
         assert!(evaluate_conditions(&cs, &sample_uc(), &gs));
     }
@@ -375,12 +346,6 @@ mod tests {
         gs.insert(
             "u1".to_string(),
             PlayerGameStatsRow {
-                playtime_minutes: 0,
-                level: 0,
-                wins: 0,
-                losses: 0,
-                currency: 0,
-                achievements: json!([]),
                 custom: json!({"score": 9000}),
             },
         );
@@ -402,7 +367,7 @@ mod tests {
     #[test]
     fn missing_universe_data_fails() {
         let cs = vec![Condition {
-            field: ConditionField::GameLevel,
+            field: ConditionField::CustomNumeric,
             operator: ConditionOperator::Gte,
             value: json!(1),
             value_end: None,
@@ -411,7 +376,7 @@ mod tests {
             badge_id: None,
             gamepass_id: None,
             asset_id: None,
-            stat_key: None,
+            stat_key: Some("level".into()),
         }];
         assert!(!evaluate_conditions(&cs, &sample_uc(), &HashMap::new()));
     }

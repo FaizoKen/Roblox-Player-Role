@@ -116,9 +116,7 @@ async fn upsert_mapped(
     mapped: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), crate::error::AppError> {
     // Every mapped key goes into `custom` — role conditions reference custom
-    // keys directly. Fixed columns (playtime_minutes/level/wins/losses/currency/
-    // achievements) are no longer populated by the poll worker; their schema
-    // remains for backward compatibility with already-stored push rows.
+    // keys directly.
     if mapped.is_empty() {
         return Ok(());
     }

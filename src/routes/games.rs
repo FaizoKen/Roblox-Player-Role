@@ -561,7 +561,7 @@ pub fn render_games_page(base_url: &str) -> String {
         <div class="card universe-card" id="u-${{esc(u.universe_id)}}">
             <h3>${{esc(u.display_name || 'Game ' + u.universe_id)}} ${{modeBadge}}</h3>
             <p><span class="label">Universe ID</span> <code>${{esc(u.universe_id)}}</code></p>
-            ${{renderStatus(u)}}
+            <div id="status-${{esc(u.universe_id)}}">${{renderStatus(u)}}</div>
             ${{pushSection}}
             ${{pullSection}}
             <div style="margin-top:18px;">
@@ -640,9 +640,34 @@ pub fn render_games_page(base_url: &str) -> String {
         try {{
             await api('POST', '/games/' + encodeURIComponent(guildId) + '/' + encodeURIComponent(uid) + '/open-cloud',
                 {{ open_cloud_api_key: key, datastore_name, poll_interval_seconds, stat_field_map, entry_key_template }});
-            showMsg('Open Cloud config saved.', 'success');
-            await load();
+            showMsg('Open Cloud config saved. Waiting for first poll to confirm setup…', 'success');
+            const box = document.getElementById('status-' + uid);
+            if (box) box.innerHTML = '<div class="status-box"><div class="status-dot status-none"></div><div style="flex:1;"><div class="status-text"><strong>Saved — waiting for first poll…</strong></div><div class="status-meta">Polling has just started. The status will update once the first DataStore fetch completes (usually within 10–30s).</div></div></div>';
+            // Poll for fresh status: the worker needs a moment to run the first
+            // fetch after save. Try a few times with backoff before giving up.
+            const delays = [3000, 5000, 8000, 12000, 20000];
+            for (let i = 0; i < delays.length; i++) {{
+                await new Promise(function(r) {{ setTimeout(r, delays[i]); }});
+                const confirmed = await refreshStatus(uid);
+                if (confirmed) break;
+            }}
         }} catch (e) {{ showMsg(e.message, 'error'); }}
+    }}
+    async function refreshStatus(uid) {{
+        try {{
+            const data = await api('GET', '/games/' + encodeURIComponent(guildId) + '/data');
+            const u = (data.universes || []).find(function(x) {{ return x.universe_id === uid; }});
+            const box = document.getElementById('status-' + uid);
+            if (!u || !box) return false;
+            const lastAny = Math.max(
+                u.last_push_at ? new Date(u.last_push_at).getTime() : 0,
+                u.last_pull_at ? new Date(u.last_pull_at).getTime() : 0,
+                u.last_stat_fetched_at ? new Date(u.last_stat_fetched_at).getTime() : 0
+            );
+            const confirmed = lastAny > 0 || (u.players_count || 0) > 0;
+            if (confirmed) box.innerHTML = renderStatus(u);
+            return confirmed;
+        }} catch (e) {{ return false; }}
     }}
     function onDsSelect(uid, value) {{
         if (value) document.getElementById('oc-ds-' + uid).value = value;

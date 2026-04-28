@@ -121,35 +121,7 @@ pub async fn ingest_stats(
             continue;
         }
 
-        // All stats — including the typed playtime/level/wins/losses/currency/
-        // achievements fields the Studio plugin sends — are merged into the
-        // `custom` JSONB blob under their field names. Role conditions reference
-        // custom keys directly. Fixed columns are no longer populated by ingest.
-        let mut blob = p.stats.custom.clone();
-        if let Some(v) = p.stats.playtime_minutes {
-            blob.insert("playtime_minutes".into(), serde_json::Value::from(v));
-        }
-        if let Some(v) = p.stats.level {
-            blob.insert("level".into(), serde_json::Value::from(v));
-        }
-        if let Some(v) = p.stats.wins {
-            blob.insert("wins".into(), serde_json::Value::from(v));
-        }
-        if let Some(v) = p.stats.losses {
-            blob.insert("losses".into(), serde_json::Value::from(v));
-        }
-        if let Some(v) = p.stats.currency {
-            blob.insert("currency".into(), serde_json::Value::from(v));
-        }
-        if let Some(a) = &p.stats.achievements {
-            blob.insert("achievements".into(), serde_json::Value::Array(
-                a.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
-            ));
-        }
-        if blob.is_empty() {
-            continue;
-        }
-        let blob_json = sqlx::types::Json(serde_json::Value::Object(blob));
+        let blob_json = sqlx::types::Json(serde_json::Value::Object(p.stats.0.clone()));
 
         sqlx::query(
             "INSERT INTO player_game_stats (roblox_user_id, universe_id, custom, fetched_at) \

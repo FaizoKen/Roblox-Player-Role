@@ -29,23 +29,23 @@ The resulting file can be:
 - [src/Config.lua](src/Config.lua) — `StatPaths` map (which `leaderstats` / attributes to upload), batch interval.
 - [src/init.server.lua](src/init.server.lua) — `Players.PlayerAdded` snapshot + 60s batch loop posting to the webhook with `X-Ingest-Secret`.
 
-## Custom stats
+## Stat keys
 
-Anything in `StatPaths` whose `key` starts with `custom.` lands in the `custom` object on the server side. Your role conditions then reference it via the `stat_key` form field (Custom Numeric / Boolean / String).
+Every entry's `key` is a free-form name. The plugin sends `stats[key] = value` for every player and the server stores it under that exact name. The role-condition stat dropdown (**Game → Custom numeric / boolean / string**) lists the keys this universe has reported. Pick one, set the comparison, save.
 
 Example:
 ```lua
-{ key = "custom.guild_score", lookup = "attribute:GuildScore" },
+{ key = "guild_score", lookup = "attribute:GuildScore" },
 ```
 Then in the dashboard: **Game → Custom numeric → stat_key=`guild_score`, >= 5000**.
 
 ## Playtime tracking
 
-The shipped plugin does **not** track playtime out of the box. To enable the *Total in-game playtime (minutes)* role condition:
+The shipped plugin does **not** track playtime out of the box. Add a stat with whatever key you want — `timePlayed`, `playtime_minutes`, anything — and that key shows up in the dropdown.
 
 **If your game already has a `Playtime` `leaderstats` entry (in minutes)** — append to `StatPaths`:
 ```lua
-{ key = "playtime_minutes", lookup = "leaderstats:Playtime" },
+{ key = "timePlayed", lookup = "leaderstats:Playtime" },
 ```
 
 **If you have no playtime tracking** — right-click `ServerScriptService` → **Insert Object** → `Script` (rename to `PlaytimeTracker`) and paste:
@@ -63,7 +63,7 @@ end)
 ```
 Then append to `StatPaths`:
 ```lua
-{ key = "playtime_minutes", lookup = "attribute:PlaytimeMinutes" },
+{ key = "timePlayed", lookup = "attribute:PlaytimeMinutes" },
 ```
 
 Note: this attribute resets on rejoin (no persistence). For permanent cumulative playtime, persist via `DataStoreService` (read on `PlayerAdded`, save on `PlayerRemoving` and `BindToClose`).

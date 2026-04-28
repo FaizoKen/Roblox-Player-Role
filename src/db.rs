@@ -52,4 +52,9 @@ pub async fn run_migrations(pool: &PgPool) {
         .execute(pool)
         .await
         .expect("Failed to run migration 008");
+
+    sqlx::raw_sql(include_str!("../migrations/009_drop_typed_stat_columns.sql"))
+        .execute(pool)
+        .await
+        .expect("Failed to run migration 009");
 }
