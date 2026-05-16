@@ -10,6 +10,10 @@ pub const MAX_USERS_PER_ROLE: usize = 30_000_000;
 
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+/// Body substring RoleLogic returns when our token isn't found server-side.
+/// Because `RoleLinkToken` rows cascade on `RoleLink` delete, getting this
+/// reliably signals the role link has been deleted upstream.
+const RL_LINK_GONE_ERROR_MSG: &str = "Invalid or revoked token";
 
 #[derive(Clone)]
 pub struct RoleLogicClient {
@@ -56,6 +60,9 @@ impl RoleLogicClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
+                return Err(AppError::RoleLinkNotFound);
+            }
             return Err(AppError::RoleLogic(format!(
                 "Get user info failed: {status} - {body}"
             )));
@@ -92,6 +99,10 @@ impl RoleLogicClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+
+            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
+                return Err(AppError::RoleLinkNotFound);
+            }
 
             if (status == reqwest::StatusCode::BAD_REQUEST
                 || status == reqwest::StatusCode::FORBIDDEN)
@@ -135,6 +146,9 @@ impl RoleLogicClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
+                return Err(AppError::RoleLinkNotFound);
+            }
             return Err(AppError::RoleLogic(format!(
                 "Remove user failed: {status} - {body}"
             )));
@@ -175,6 +189,9 @@ impl RoleLogicClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
+                return Err(AppError::RoleLinkNotFound);
+            }
             if status == reqwest::StatusCode::BAD_REQUEST
                 && body.to_lowercase().contains("maximum")
             {
@@ -272,6 +289,9 @@ impl RoleLogicClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
+                return Err(AppError::RoleLinkNotFound);
+            }
             return Err(AppError::RoleLogic(format!(
                 "Start upload failed: {status} - {body}"
             )));
