@@ -319,7 +319,12 @@ async fn fetch_guild_members(
     guild_id: &str,
     cookie: &str,
 ) -> Result<(Vec<String>, Option<String>, std::collections::HashMap<String, String>), AppError> {
-    let path = format!("/auth/guild_members?guild_id={}", urlencoding::encode(guild_id));
+    // `plugin=` drops opted-out users from the rendered list so the
+    // public view stays consistent with the actual role assignments.
+    let path = format!(
+        "/auth/guild_members?guild_id={}&plugin=roblox-player-role",
+        urlencoding::encode(guild_id)
+    );
     let body = auth_gateway_get(state, &path, cookie).await?;
     let discord_ids: Vec<String> = body
         .get("discord_ids")
