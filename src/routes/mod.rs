@@ -1,3 +1,4 @@
+pub mod dweeb;
 pub mod games;
 pub mod health;
 pub mod ingest;
