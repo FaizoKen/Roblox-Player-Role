@@ -193,6 +193,8 @@ pub async fn sync_for_player(discord_id: &str, state: &AppState) -> Result<(), A
                                 delete_orphan_role_link(&guild_id, &role_id, &pool).await;
                                 return;
                             }
+                            // Disabled link: skip silently, leave config intact.
+                            Err(AppError::RoleLinkDisabled) => return,
                             Err(AppError::UserLimitReached { limit }) => {
                                 tracing::warn!(guild_id, role_id, discord_id, limit, "User limit reached");
                                 return;
@@ -218,6 +220,8 @@ pub async fn sync_for_player(discord_id: &str, state: &AppState) -> Result<(), A
                                 delete_orphan_role_link(&guild_id, &role_id, &pool).await;
                                 return;
                             }
+                            // Disabled link: skip silently, leave config intact.
+                            Err(AppError::RoleLinkDisabled) => return,
                             Err(e) => {
                                 tracing::error!(guild_id, role_id, discord_id, "remove_user failed: {e}");
                                 return;
@@ -437,6 +441,8 @@ pub async fn sync_for_role_link(
                 delete_orphan_role_link(guild_id, role_id, pool).await;
                 return Ok(());
             }
+            // Disabled link: leave config + assignments intact, just skip.
+            Err(AppError::RoleLinkDisabled) => return Ok(()),
             Err(e) => return Err(e),
         }
         sqlx::query("DELETE FROM role_assignments WHERE guild_id = $1 AND role_id = $2")
@@ -478,6 +484,8 @@ pub async fn sync_for_role_link(
                     delete_orphan_role_link(guild_id, role_id, pool).await;
                     return Ok(());
                 }
+                // Disabled link: leave config + assignments intact, just skip.
+                Err(AppError::RoleLinkDisabled) => return Ok(()),
                 Err(e) => return Err(e),
             }
             sqlx::query("DELETE FROM role_assignments WHERE guild_id = $1 AND role_id = $2")
@@ -504,6 +512,8 @@ pub async fn sync_for_role_link(
                 delete_orphan_role_link(guild_id, role_id, pool).await;
                 return Ok(());
             }
+            // Disabled link: leave config + assignments intact, just skip.
+            Err(AppError::RoleLinkDisabled) => return Ok(()),
             Err(e) => return Err(e),
         }
         sqlx::query("DELETE FROM role_assignments WHERE guild_id = $1 AND role_id = $2")
@@ -575,6 +585,8 @@ pub async fn sync_for_role_link(
             delete_orphan_role_link(guild_id, role_id, pool).await;
             return Ok(());
         }
+        // Disabled link: leave config + assignments intact, just skip.
+        Err(AppError::RoleLinkDisabled) => return Ok(()),
         Err(e) => return Err(e),
     }
 
@@ -699,6 +711,8 @@ pub async fn remove_all_assignments(discord_id: &str, state: &AppState) -> Resul
             Err(AppError::RoleLinkNotFound) => {
                 delete_orphan_role_link(guild_id, role_id, pool).await;
             }
+            // Disabled link: nothing to remove from; local rows are cleared below.
+            Err(AppError::RoleLinkDisabled) => {}
             Err(e) => {
                 tracing::error!(guild_id, role_id, discord_id, "Failed to remove during unlink: {e}");
             }

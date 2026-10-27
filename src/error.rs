@@ -22,6 +22,9 @@ pub enum AppError {
     #[error("Role link not found on RoleLogic")]
     RoleLinkNotFound,
 
+    #[error("Role link is disabled on RoleLogic")]
+    RoleLinkDisabled,
+
     #[error("Role link user limit reached ({limit})")]
     UserLimitReached { limit: usize },
 
@@ -77,6 +80,7 @@ impl IntoResponse for AppError {
                 (StatusCode::BAD_GATEWAY, "Failed to sync roles".to_string())
             }
             AppError::RoleLinkNotFound => (StatusCode::NOT_FOUND, "Role link not found".to_string()),
+            AppError::RoleLinkDisabled => (StatusCode::FORBIDDEN, "Role link is disabled".to_string()),
             AppError::UserLimitReached { limit } => {
                 tracing::warn!("Role link user limit reached: {limit}");
                 (StatusCode::FORBIDDEN, "Role link user limit reached".to_string())
