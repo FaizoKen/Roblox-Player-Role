@@ -18,6 +18,25 @@ const RL_LINK_GONE_ERROR_MSG: &str = "Invalid or revoked token";
 /// toggled it off. Unlike [`RL_LINK_GONE_ERROR_MSG`] this is NOT a deletion —
 /// the link (and its config) must be left intact; we simply skip syncing it.
 const RL_LINK_DISABLED_ERROR_MSG: &str = "This role link is disabled";
+/// Body substring for a link paused because its guild is over the
+/// integration-slot quota. RoleLogic treats it exactly like a disabled link
+/// (every call rejects until the owner frees a slot or upgrades), so it maps
+/// to the same skip. Source: `role-link-token.guard.ts`.
+const RL_LINK_PAUSED_ERROR_MSG: &str = "This role link is paused";
+/// 409 body marker for a list write held by RoleLogic's shrink gate until an
+/// owner confirms the removals. Source: `RoleLinkService.assertShrinkAllowed`.
+const RL_CONFIRM_REQUIRED: &str = "confirm_required";
+
+/// A 403 for a link that still exists but is switched off or paused.
+fn link_inactive(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN
+        && (body.contains(RL_LINK_DISABLED_ERROR_MSG) || body.contains(RL_LINK_PAUSED_ERROR_MSG))
+}
+
+/// A 409 for a list write the shrink gate is holding.
+fn removal_held(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::CONFLICT && body.contains(RL_CONFIRM_REQUIRED)
+}
 
 #[derive(Clone)]
 pub struct RoleLogicClient {
@@ -67,7 +86,7 @@ impl RoleLogicClient {
             if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
                 return Err(AppError::RoleLinkNotFound);
             }
-            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_DISABLED_ERROR_MSG) {
+            if link_inactive(status, &body) {
                 return Err(AppError::RoleLinkDisabled);
             }
             return Err(AppError::RoleLogic(format!(
@@ -110,7 +129,7 @@ impl RoleLogicClient {
             if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
                 return Err(AppError::RoleLinkNotFound);
             }
-            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_DISABLED_ERROR_MSG) {
+            if link_inactive(status, &body) {
                 return Err(AppError::RoleLinkDisabled);
             }
 
@@ -159,7 +178,7 @@ impl RoleLogicClient {
             if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
                 return Err(AppError::RoleLinkNotFound);
             }
-            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_DISABLED_ERROR_MSG) {
+            if link_inactive(status, &body) {
                 return Err(AppError::RoleLinkDisabled);
             }
             return Err(AppError::RoleLogic(format!(
@@ -205,13 +224,16 @@ impl RoleLogicClient {
             if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
                 return Err(AppError::RoleLinkNotFound);
             }
-            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_DISABLED_ERROR_MSG) {
+            if link_inactive(status, &body) {
                 return Err(AppError::RoleLinkDisabled);
             }
             if status == reqwest::StatusCode::BAD_REQUEST
                 && body.to_lowercase().contains("maximum")
             {
                 return Err(AppError::UserLimitReached { limit: 0 });
+            }
+            if removal_held(status, &body) {
+                return Err(AppError::RemovalHeld);
             }
             return Err(AppError::RoleLogic(format!(
                 "Replace users failed: {status} - {body}"
@@ -308,7 +330,7 @@ impl RoleLogicClient {
             if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_GONE_ERROR_MSG) {
                 return Err(AppError::RoleLinkNotFound);
             }
-            if status == reqwest::StatusCode::FORBIDDEN && body.contains(RL_LINK_DISABLED_ERROR_MSG) {
+            if link_inactive(status, &body) {
                 return Err(AppError::RoleLinkDisabled);
             }
             return Err(AppError::RoleLogic(format!(
@@ -389,6 +411,9 @@ impl RoleLogicClient {
             {
                 return Err(AppError::UserLimitReached { limit: 0 });
             }
+            if removal_held(status, &body) {
+                return Err(AppError::RemovalHeld);
+            }
             return Err(AppError::RoleLogic(format!(
                 "Commit upload failed: {status} - {body}"
             )));
@@ -422,5 +447,37 @@ impl RoleLogicClient {
             .await
             .map_err(|e| AppError::RoleLogic(e.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    // Bodies as RoleLogic sends them (role-link-token.guard.ts and
+    // RoleLinkService.assertShrinkAllowed).
+    const PAUSED: &str = r#"{"errors":"This role link is paused — integration slots quota exceeded. Upgrade for more integration slots or delete other role links.","requestId":"r"}"#;
+    const DISABLED: &str = r#"{"errors":"This role link is disabled","requestId":"r"}"#;
+    const GONE: &str = r#"{"errors":"Invalid or revoked token","requestId":"r"}"#;
+    const HELD: &str = r#"{"errors":{"error":"confirm_required","code":"shrink","change_id":"c","previous":2,"next":0,"removals":2}}"#;
+
+    #[test]
+    fn paused_and_disabled_links_are_inactive() {
+        assert!(link_inactive(StatusCode::FORBIDDEN, PAUSED));
+        assert!(link_inactive(StatusCode::FORBIDDEN, DISABLED));
+        // A deleted link is a different outcome: the caller removes its row.
+        assert!(!link_inactive(StatusCode::FORBIDDEN, GONE));
+        assert!(!link_inactive(StatusCode::INTERNAL_SERVER_ERROR, PAUSED));
+    }
+
+    #[test]
+    fn a_shrink_hold_is_only_a_409_confirm_required() {
+        assert!(removal_held(StatusCode::CONFLICT, HELD));
+        assert!(!removal_held(
+            StatusCode::CONFLICT,
+            r#"{"errors":"Upload already in progress"}"#
+        ));
+        assert!(!removal_held(StatusCode::FORBIDDEN, HELD));
     }
 }
